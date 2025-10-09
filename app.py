@@ -405,15 +405,26 @@ class CourierAutomation:
 def check_confirmation_in_background(order_id):
     """Run confirmation check in background thread"""
     def run_check():
-        automation = CourierAutomation()
-        if automation.wait_for_confirmation(order_id):
-            process_confirmed_order(order_id)
-        else:
-            print(f"Order {order_id} was not confirmed - no courier notified")
+        print(f"🎯 BACKGROUND THREAD STARTED for order {order_id}")
+        try:
+            automation = CourierAutomation()
+            print(f"🔧 CourierAutomation created for order {order_id}")
+            
+            if automation.wait_for_confirmation(order_id):
+                print(f"✅ CONFIRMED! Processing order {order_id}")
+                process_confirmed_order(order_id)
+            else:
+                print(f"❌ Order {order_id} was not confirmed or was cancelled")
+                
+        except Exception as e:
+            print(f"💥 BACKGROUND THREAD CRASHED for order {order_id}: {str(e)}")
+            import traceback
+            print(f"📋 Stack trace: {traceback.format_exc()}")
 
     thread = threading.Thread(target=run_check)
     thread.daemon = True
     thread.start()
+    print(f"🎯 Background thread launched for order {order_id}")
 
 def process_confirmed_order(order_id):
     """Process order that has been confirmed"""
@@ -502,6 +513,27 @@ def health_check():
 @app.route('/')
 def home():
     return "Shipping Automation Server is Running! 🚚"
+
+def keep_alive():
+    """Background thread to ping app every 10 minutes to prevent Render sleep"""
+    def ping():
+        import requests
+        while True:
+            try:
+                # Ping our own health endpoint
+                requests.get("https://shopify-automation-secure.onrender.com/health", timeout=5)
+                print("🔄 Keep-alive ping sent")
+            except Exception as e:
+                print(f"⚠️ Keep-alive ping failed: {e}")
+            time.sleep(600)  # Wait 10 minutes
+    
+    thread = threading.Thread(target=ping)
+    thread.daemon = True
+    thread.start()
+    print("✅ Keep-alive service started")
+
+# Start keep-alive when app loads
+keep_alive()
 
 if __name__ == '__main__':
     print("Starting Shipping Automation Server...")
