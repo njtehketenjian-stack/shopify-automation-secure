@@ -28,37 +28,181 @@ app = Flask(__name__)
 
 class EHDMService:
     def __init__(self):
-        self.base_url = "http://store.payx.am"
+        self.base_url = "https://store.payx.am"
         self.token = None
+    
+    def login(self):
+        """Get JWT token from E-HDM API"""
+        try:
+            login_url = f"{self.base_url}/api/Login/LoginUser"
+            credentials = {
+                "username": EHDM_USERNAME,
+                "password": EHDM_PASSWORD
+            }
+            
+            print(f"🔐 Attempting PayX login with: {EHDM_USERNAME}")
+            response = requests.post(login_url, json=credentials)
+            
+            if response.status_code == 200:
+                # FIX: PayX returns token in 'token' header (lowercase)
+                self.token = response.headers.get('token')
+                if self.token:
+                    print("✅ PayX JWT token obtained successfully!")
+                    return True
+                else:
+                    print("⚠️  Login successful but no token in 'token' header")
+            else:
+                print(f"❌ PayX login failed: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            print(f"❌ PayX login error: {str(e)}")
+        
+        return False
 
-def login(self):
-    """Get JWT token from E-HDM API"""
-    try:
-        login_url = f"{self.base_url}/api/Login/LoginUser"
-        credentials = {
-            "username": EHDM_USERNAME,
-            "password": EHDM_PASSWORD
+    def create_courier_order(self, shopify_order):
+        """Create draft order with courier and get tracking number"""
+        print("Creating courier order...")
+
+        # Use shipping address OR fallback to billing address
+        shipping_address = shopify_order.get('shipping_address')
+        billing_address = shopify_order.get('billing_address')
+
+        # If no shipping address, use billing address
+        if not shipping_address and billing_address:
+            print("⚠️ No shipping address found, using billing address instead")
+            shipping_address = billing_address
+        elif not shipping_address:
+            print("❌ Cannot create courier order: No shipping or billing address found")
+            return None
+
+        line_items = shopify_order.get('line_items', [])
+
+        # Build order products array
+        order_products = []
+        for item in line_items:
+            price_in_cents = int(float(item['price']) * 100)
+            order_products.append({
+                "name": item['name'][:50],
+                "price": price_in_cents
+            })
+
+        # If no products, add a default item
+        if not order_products:
+            order_products.append({
+                "name": "Online Order Items",
+                "price": 100
+            })
+
+        # Construct the API payload
+        courier_order_data = {
+            "address_to": shipping_address.get('address1', '')[:100],
+            "province_id": self.map_region_to_province(shipping_address.get('province')),
+            "city": shipping_address.get('city', '')[:50],
+            "package_type": "Parcel",
+            "parcel_weight": "1.0",
+            "order_products": order_products,
+            "recipient_type": "Individual",
+            "person_name": f"{shipping_address.get('first_name', '')} {shipping_address.get('last_name', '')}"[:50],
+            "phone": shipping_address.get('phone', '123456789')[:20],
+            "barcode_id": str(shopify_order['id']),
+            "is_payed": 1,
+            "delivery_method": "home",
+            "return_receipt": False,
+            "notes": f"Shopify Order #{shopify_order.get('order_number', '')}",
+            "label": 0
         }
 
-        print(f"🔐 Attempting PayX login with: {EHDM_USERNAME}")
-        response = requests.post(login_url, json=credentials)
+        # Make API call to create draft order
+        courier_url = f"{COURIER_BASE_URL}/api/create-draft-order"
+        response = requests.post(courier_url, json=courier_order_data, headers=self.courier_headers)
 
         if response.status_code == 200:
-            # FIX: PayX returns token in 'token' header (lowercase)
-            self.token = response.headers.get('token')
-            if self.token:
-                print("✅ PayX JWT token obtained successfully!")
-                return True
-            else:
-                print("⚠️  Login successful but no token in 'token' header")
+            print("✅ Courier order created successfully!")
+
+            # DEBUG: Log the full response to see what tracking data we get
+            print(f"=== DEBUG Courier Response: {response.text}")
+
+            try:
+                courier_response = response.json()
+                # Try to extract real tracking number from response
+                tracking_number = (
+                    courier_response.get('tracking_number') or
+                    courier_response.get('barcode_id') or
+                    courier_response.get('id') or
+                    str(shopify_order['id'])  # Fallback to Shopify ID
+                )
+                print(f"✅ Real tracking number: {tracking_number}")
+                return tracking_number
+            except:
+                print("⚠️ Could not parse courier response, using Shopify ID as tracking")
+                return str(shopify_order['id'])
         else:
-            print(f"❌ PayX login failed: {response.status_code} - {response.text}")
+            print(f"❌ Courier API Error: {response.status_code} - {response.text}")
+            return None
 
-    except Exception as e:
-        print(f"❌ PayX login error: {str(e)}")
+    def update_shopify_tracking(self, order_id, tracking_number):
+        """Add tracking number to Shopify order and fulfill it"""
+        print(f"Updating Shopify order {order_id} with tracking {tracking_number}")
 
-    return False
+        # Get fulfillment order ID
+        fulfillment_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
+        fulfillment_response = requests.get(fulfillment_url, headers=self.shopify_headers)
 
+        if fulfillment_response.status_code == 200:
+            fulfillment_data = fulfillment_response.json()
+            if fulfillment_data.get('fulfillment_orders'):
+                fulfillment_order_id = fulfillment_data['fulfillment_orders'][0]['id']
+
+                # Create fulfillment with tracking
+                fulfillment_data = {
+                    "fulfillment": {
+                        "tracking_info": {
+                            "number": tracking_number,
+                            "company": "TransImpex Express",
+                            "url": f"https://transimpexexpress.am/tracking/{tracking_number}"
+                        },
+                        "notify_customer": True,
+                        "line_items_by_fulfillment_order": [
+                            {
+                                "fulfillment_order_id": fulfillment_order_id
+                            }
+                        ]
+                    }
+                }
+
+                fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
+                response = requests.post(fulfill_url, json=fulfillment_data, headers=self.shopify_headers)
+
+                if response.status_code == 200:
+                    print("✅ Shopify order updated with tracking successfully!")
+                    return True
+
+        print("❌ Failed to update Shopify with tracking")
+        return False
+
+    def notify_team(self, shopify_order, tracking_number):
+        """Notify about the new order"""
+        message = f"🚚 NEW SHIPPING ORDER\n"
+        message += f"Order #: {shopify_order.get('order_number')}\n"
+
+        # Use shipping or billing address for customer name
+        address = shopify_order.get('shipping_address') or shopify_order.get('billing_address') or {}
+        message += f"Customer: {address.get('first_name', '')} {address.get('last_name', '')}\n"
+        message += f"Tracking ID: {tracking_number}\n"
+        message += f"Address: {address.get('address1', 'No address')}\n"
+        message += f"Phone: {address.get('phone', 'N/A')}"
+
+        print("📢 TEAM NOTIFICATION:")
+        print(message)
+
+    def map_region_to_province(self, region_name):
+        """Map Shopify regions to courier province IDs"""
+        province_mapping = {
+            'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
+            'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
+            'Vayots Dzor': 10, 'Yerevan': 11
+        }
+        return province_mapping.get(region_name, 11)
 
 class CourierAutomation:
     def __init__(self):
@@ -274,6 +418,7 @@ def check_confirmation_in_background(order_id):
 def process_confirmed_order(order_id):
     """Process order that has been confirmed"""
     automation = CourierAutomation()
+    ehdm_service = EHDMService()
 
     # Get order details from Shopify
     order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
@@ -281,7 +426,14 @@ def process_confirmed_order(order_id):
 
     if response.status_code == 200:
         shopify_order = response.json().get('order', {})
-
+        
+        # NEW: Generate fiscal receipt with PayX first
+        if ehdm_service.login():
+            print("✅ PayX login successful, ready for receipt generation")
+            # TODO: Add receipt generation logic here
+        else:
+            print("❌ PayX login failed, but continuing with shipping")
+        
         # Create order with courier
         tracking_number = automation.create_courier_order(shopify_order)
 
@@ -350,7 +502,6 @@ def health_check():
 @app.route('/')
 def home():
     return "Shipping Automation Server is Running! 🚚"
-
 
 if __name__ == '__main__':
     print("Starting Shipping Automation Server...")
