@@ -71,6 +71,40 @@ def test_payx_connection():
         print("❌ PayX Login FAILED!")
         return False
 
+
+def test_payx_detailed():
+    """Detailed test of PayX connection"""
+    print("🧪 Detailed PayX test starting...")
+    
+    import requests
+    login_url = "https://store.payx.am/api/Login/LoginUser"
+    credentials = {
+        "username": EHDM_USERNAME,
+        "password": EHDM_PASSWORD
+    }
+    
+    print(f"🔐 Testing with username: {EHDM_USERNAME}")
+    print(f"🔗 URL: {login_url}")
+    
+    try:
+        response = requests.post(login_url, json=credentials, timeout=10)
+        print(f"📡 Response status: {response.status_code}")
+        print(f"📡 Response headers: {dict(response.headers)}")
+        print(f"📡 Response body: {response.text}")
+        
+        if response.status_code == 200:
+            token = response.headers.get('Authorization')
+            print(f"✅ SUCCESS! Token received: {bool(token)}")
+            return True
+        else:
+            print(f"❌ FAILED: Status {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"💥 ERROR: {str(e)}")
+        return False
+
+
 class CourierAutomation:
     def __init__(self):
         self.shopify_headers = {
@@ -362,8 +396,9 @@ def health_check():
 def home():
     return "Shipping Automation Server is Running! 🚚"
 
-    print("🚀 Starting PayX connection test...")
-test_payx_connection()
+ # TEMPORARY TEST - Add this at the bottom
+print("🚀 Starting detailed PayX connection test...")
+test_payx_detailed()
 
 if __name__ == '__main__':
     print("Starting Shipping Automation Server...")
