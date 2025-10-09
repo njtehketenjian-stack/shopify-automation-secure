@@ -31,33 +31,33 @@ class EHDMService:
         self.base_url = "http://store.payx.am"
         self.token = None
 
-    def login(self):
-        """Get JWT token from E-HDM API"""
-        try:
-            login_url = f"{self.base_url}/api/Login/LoginUser"
-            credentials = {
-                "username": EHDM_USERNAME,
-                "password": EHDM_PASSWORD
-            }
+def login(self):
+    """Get JWT token from E-HDM API"""
+    try:
+        login_url = f"{self.base_url}/api/Login/LoginUser"
+        credentials = {
+            "username": EHDM_USERNAME,
+            "password": EHDM_PASSWORD
+        }
 
-            print(f"🔐 Attempting PayX login with: {EHDM_USERNAME}")
-            response = requests.post(login_url, json=credentials)
+        print(f"🔐 Attempting PayX login with: {EHDM_USERNAME}")
+        response = requests.post(login_url, json=credentials)
 
-            if response.status_code == 200:
-                # Extract JWT token from response headers
-                self.token = response.headers.get('Authorization')
-                if self.token:
-                    print("✅ PayX JWT token obtained successfully!")
-                    return True
-                else:
-                    print("⚠️  Login successful but no token in headers")
+        if response.status_code == 200:
+            # FIX: PayX returns token in 'token' header (lowercase)
+            self.token = response.headers.get('token')
+            if self.token:
+                print("✅ PayX JWT token obtained successfully!")
+                return True
             else:
-                print(f"❌ PayX login failed: {response.status_code} - {response.text}")
+                print("⚠️  Login successful but no token in 'token' header")
+        else:
+            print(f"❌ PayX login failed: {response.status_code} - {response.text}")
 
-        except Exception as e:
-            print(f"❌ PayX login error: {str(e)}")
+    except Exception as e:
+        print(f"❌ PayX login error: {str(e)}")
 
-        return False
+    return False
 
 def test_payx_connection():
     """Test PayX API connection with your credentials"""
