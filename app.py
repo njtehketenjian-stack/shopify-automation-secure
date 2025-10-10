@@ -70,27 +70,166 @@ class EHDMService:
         
         return False
 
+    def extract_customer_data(self, shopify_order):
+        """
+        Extract customer data using priority-based fallback system
+        Returns: dict with name, address, city, province, phone
+        """
+        shipping_address = shopify_order.get('shipping_address', {})
+        billing_address = shopify_order.get('billing_address', {})
+        customer = shopify_order.get('customer', {})
+        
+        print("=== DEBUG Customer Data Extraction ===")
+        print(f"Shipping Address: {shipping_address}")
+        print(f"Billing Address: {billing_address}")
+        print(f"Customer Object: {customer}")
+        
+        # Priority 1: Extract name with fallbacks
+        name = self._extract_name(shipping_address, billing_address, customer)
+        
+        # Priority 2: Extract address with fallbacks
+        address = self._extract_address(shipping_address, billing_address)
+        
+        # Priority 3: Extract phone with fallbacks
+        phone = self._extract_phone(shipping_address, billing_address, customer)
+        
+        # Priority 4: Extract city with fallbacks
+        city = self._extract_city(shipping_address, billing_address)
+        
+        # Priority 5: Extract province with fallbacks
+        province = self._extract_province(shipping_address, billing_address)
+        
+        customer_data = {
+            'name': name,
+            'address': address,
+            'phone': phone,
+            'city': city,
+            'province': province
+        }
+        
+        print(f"Extracted Customer Data: {customer_data}")
+        print("=== END DEBUG ===")
+        
+        return customer_data
+
+    def _extract_name(self, shipping_address, billing_address, customer):
+        """Extract customer name with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('first_name') or shipping_address.get('last_name'):
+            first_name = shipping_address.get('first_name', '').strip()
+            last_name = shipping_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Try billing address
+        if billing_address.get('first_name') or billing_address.get('last_name'):
+            first_name = billing_address.get('first_name', '').strip()
+            last_name = billing_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Try customer object
+        if customer.get('first_name') or customer.get('last_name'):
+            first_name = customer.get('first_name', '').strip()
+            last_name = customer.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Final fallback
+        return "Customer"
+
+    def _extract_address(self, shipping_address, billing_address):
+        """Extract address with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('address1'):
+            address1 = shipping_address.get('address1', '').strip()
+            address2 = shipping_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        # Try billing address
+        if billing_address.get('address1'):
+            address1 = billing_address.get('address1', '').strip()
+            address2 = billing_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        # Final fallback
+        return "Address Not Provided"
+
+    def _extract_phone(self, shipping_address, billing_address, customer):
+        """Extract phone number with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('phone'):
+            phone = shipping_address.get('phone', '').strip()
+            if phone:
+                return phone
+        
+        # Try billing address
+        if billing_address.get('phone'):
+            phone = billing_address.get('phone', '').strip()
+            if phone:
+                return phone
+        
+        # Try customer object
+        if customer.get('phone'):
+            phone = customer.get('phone', '').strip()
+            if phone:
+                return phone
+        
+        # Final fallback
+        return "+374 00 000 000"
+
+    def _extract_city(self, shipping_address, billing_address):
+        """Extract city with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('city'):
+            city = shipping_address.get('city', '').strip()
+            if city:
+                return city
+        
+        # Try billing address
+        if billing_address.get('city'):
+            city = billing_address.get('city', '').strip()
+            if city:
+                return city
+        
+        # Final fallback
+        return "Unknown"
+
+    def _extract_province(self, shipping_address, billing_address):
+        """Extract province with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('province'):
+            return shipping_address.get('province')
+        
+        # Try billing address
+        if billing_address.get('province'):
+            return billing_address.get('province')
+        
+        # Final fallback
+        return None
+
     def create_courier_order(self, shopify_order):
         """Create draft order with courier and get tracking number"""
         print("Creating courier order...")
 
-        # Use shipping address OR fallback to billing address
-        shipping_address = shopify_order.get('shipping_address')
-        billing_address = shopify_order.get('billing_address')
-
-        # If no shipping address, use billing address
-        if not shipping_address and billing_address:
-            print("⚠️ No shipping address found, using billing address instead")
-            shipping_address = billing_address
-        elif not shipping_address:
-            print("❌ Cannot create courier order: No shipping or billing address found")
-            return None
-
-        # DEBUG: Check what address data we're receiving from Shopify
-        print("=== DEBUG Shopify Address Data ===")
-        print(f"Shipping Address: {shipping_address}")
-        print(f"Billing Address: {billing_address}")
+        # DEBUG: Print complete order structure to understand available data
+        print("=== DEBUG Complete Shopify Order Structure ===")
+        print(f"Order Keys: {list(shopify_order.keys())}")
+        print(f"Shipping Address: {shopify_order.get('shipping_address')}")
+        print(f"Billing Address: {shopify_order.get('billing_address')}")
+        print(f"Customer Object: {shopify_order.get('customer')}")
         print("=== END DEBUG ===")
+
+        # Extract customer data using priority-based fallback system
+        customer_data = self.extract_customer_data(shopify_order)
+        
+        if not customer_data:
+            print("❌ Cannot create courier order: No customer data found")
+            return None
 
         line_items = shopify_order.get('line_items', [])
 
@@ -110,32 +249,17 @@ class EHDMService:
                 "price": 100
             })
 
-        # Construct the API payload - FIXED: Use REAL customer data from Shopify
-        address_to = f"{shipping_address.get('address1', '')} {shipping_address.get('address2', '')}".strip()
-        person_name = f"{shipping_address.get('first_name', '')} {shipping_address.get('last_name', '')}".strip()
-        phone = shipping_address.get('phone', '')
-        city = shipping_address.get('city', '')
-
-        # Use fallbacks only if data is completely missing
-        if not address_to:
-            address_to = "Address Not Provided"
-        if not person_name:
-            person_name = "Customer"
-        if not phone:
-            phone = "000000000"
-        if not city:
-            city = "Unknown"
-
+        # Construct the API payload with REAL customer data
         courier_order_data = {
-            "address_to": address_to[:100],
-            "province_id": self.map_region_to_province(shipping_address.get('province')),
-            "city": city[:50],
+            "address_to": customer_data['address'][:100],
+            "province_id": self.map_region_to_province(customer_data['province']),
+            "city": customer_data['city'][:50],
             "package_type": "Parcel",
             "parcel_weight": "1.0",
             "order_products": order_products,
             "recipient_type": "Individual",
-            "person_name": person_name[:50],
-            "phone": phone[:20],
+            "person_name": customer_data['name'][:50],
+            "phone": customer_data['phone'][:20],
             "barcode_id": str(shopify_order['id']),
             "is_payed": 1,
             "delivery_method": "home",
@@ -263,15 +387,16 @@ class EHDMService:
 
     def notify_team(self, shopify_order, tracking_number):
         """Notify about the new order"""
+        # Extract customer data for notification
+        customer_data = self.extract_customer_data(shopify_order)
+        
         message = f"🚚 NEW SHIPPING ORDER\n"
         message += f"Order #: {shopify_order.get('order_number')}\n"
-
-        # Use shipping or billing address for customer name
-        address = shopify_order.get('shipping_address') or shopify_order.get('billing_address') or {}
-        message += f"Customer: {address.get('first_name', '')} {address.get('last_name', '')}\n"
+        message += f"Customer: {customer_data['name']}\n"
         message += f"Tracking ID: {tracking_number}\n"
-        message += f"Address: {address.get('address1', 'No address')}\n"
-        message += f"Phone: {address.get('phone', 'N/A')}"
+        message += f"Address: {customer_data['address']}\n"
+        message += f"Phone: {customer_data['phone']}\n"
+        message += f"City: {customer_data['city']}"
 
         print("📢 TEAM NOTIFICATION:")
         print(message)
@@ -317,18 +442,34 @@ class CourierAutomation:
                 order_data = response.json().get('order', {})
                 tags = order_data.get('tags', '').split(',')
                 
-                # DEBUG: Print order status
+                # DEBUG: Print detailed order status
                 print(f"=== DEBUG Order Status ===")
                 print(f"Order ID: {shopify_order_id}")
                 print(f"Tags: {tags}")
                 print(f"Fulfillment Status: {order_data.get('fulfillment_status')}")
                 print(f"Financial Status: {order_data.get('financial_status')}")
+                print(f"Line Items: {len(order_data.get('line_items', []))}")
+                for item in order_data.get('line_items', []):
+                    print(f"  - {item.get('name')}: requires_shipping={item.get('requires_shipping')}, fulfillment_status={item.get('fulfillment_status')}")
+                print(f"Fulfillments: {order_data.get('fulfillments', [])}")
                 print("=== END DEBUG ===")
 
-                # Check if order already has fulfillment (already processed)
+                # Check if order already has fulfillment
                 if order_data.get('fulfillment_status') in ['fulfilled', 'partial']:
-                    print(f"✅ Order {shopify_order_id} already fulfilled, skipping")
-                    return False
+                    # Check if this fulfillment has OUR tracking (meaning we already processed it)
+                    has_our_tracking = False
+                    for fulfillment in order_data.get('fulfillments', []):
+                        if fulfillment.get('tracking_company') == 'TransImpex Express':
+                            has_our_tracking = True
+                            break
+                    
+                    if has_our_tracking:
+                        print(f"✅ Order {shopify_order_id} already processed by our system, skipping")
+                        return False
+                    else:
+                        print(f"🔄 Order {shopify_order_id} fulfilled by other system, but we'll process courier order")
+                        # Continue processing - order was auto-fulfilled but we still need to create courier order
+                        return True
 
                 # Check if order is confirmed
                 if 'confirmed' in [tag.strip().lower() for tag in tags]:
@@ -562,9 +703,15 @@ def process_confirmed_order(order_id):
     if response.status_code == 200:
         shopify_order = response.json().get('order', {})
         
-        # Check if order already has fulfillment
-        if shopify_order.get('fulfillment_status') in ['fulfilled', 'partial']:
-            print(f"✅ Order {order_id} already fulfilled, skipping")
+        # Check if order already has OUR fulfillment
+        has_our_tracking = False
+        for fulfillment in shopify_order.get('fulfillments', []):
+            if fulfillment.get('tracking_company') == 'TransImpex Express':
+                has_our_tracking = True
+                break
+        
+        if has_our_tracking:
+            print(f"✅ Order {order_id} already processed by our system, skipping")
             return
         
         # NEW: Generate fiscal receipt with PayX first
