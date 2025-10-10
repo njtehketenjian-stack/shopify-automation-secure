@@ -499,11 +499,11 @@ class CourierAutomation:
         }
 
     def wait_for_confirmation(self, shopify_order_id):
-        """Wait for order to be tagged as confirmed"""
-        print(f"Waiting for confirmation on order {shopify_order_id}")
+        """Wait for order to be tagged as confirmed - OPTIMIZED VERSION"""
+        print(f"⏰ Waiting for confirmation on order {shopify_order_id}")
 
-        max_attempts = 288  # Check for 24 hours (every 5 minutes)
-
+        max_attempts = 120  # Check for 1 hour max (30 seconds * 120 = 1 hour)
+        
         for attempt in range(max_attempts):
             # Check if order is already being processed to prevent duplicates
             if f"processing_{shopify_order_id}" in processed_orders:
@@ -516,18 +516,14 @@ class CourierAutomation:
 
             if response.status_code == 200:
                 order_data = response.json().get('order', {})
-                tags = order_data.get('tags', '').split(',')
+                tags = [tag.strip().lower() for tag in order_data.get('tags', '').split(',')]
                 
                 # DEBUG: Print detailed order status
-                print(f"=== DEBUG Order Status ===")
+                print(f"=== DEBUG Order Status (Attempt {attempt + 1}) ===")
                 print(f"Order ID: {shopify_order_id}")
                 print(f"Tags: {tags}")
                 print(f"Fulfillment Status: {order_data.get('fulfillment_status')}")
                 print(f"Financial Status: {order_data.get('financial_status')}")
-                print(f"Line Items: {len(order_data.get('line_items', []))}")
-                for item in order_data.get('line_items', []):
-                    print(f"  - {item.get('name')}: requires_shipping={item.get('requires_shipping')}, fulfillment_status={item.get('fulfillment_status')}")
-                print(f"Fulfillments: {order_data.get('fulfillments', [])}")
                 print("=== END DEBUG ===")
 
                 # Check if order already has fulfillment
@@ -547,9 +543,9 @@ class CourierAutomation:
                         # Continue processing - order was auto-fulfilled but we still need to create courier order
                         return True
 
-                # Check if order is confirmed
-                if 'confirmed' in [tag.strip().lower() for tag in tags]:
-                    print(f"Order {shopify_order_id} confirmed! Processing...")
+                # Check if order is confirmed - IMPROVED TAG PARSING
+                if 'confirmed' in tags:
+                    print(f"🎉 Order {shopify_order_id} confirmed! Processing...")
 
                     # Mark as processing to prevent duplicates
                     processed_orders[f"processing_{shopify_order_id}"] = True
@@ -566,16 +562,16 @@ class CourierAutomation:
 
                     return True
                 # Check if order is cancelled
-                elif 'cancelled' in [tag.strip().lower() for tag in tags]:
-                    print(f"Order {shopify_order_id} was cancelled.")
+                elif 'cancelled' in tags:
+                    print(f"❌ Order {shopify_order_id} was cancelled.")
                     # Trigger cancellation in TransImpex
                     self.cancel_order_in_transimpex(shopify_order_id)
                     return False
 
-            print(f"Attempt {attempt + 1}: Order not confirmed yet. Waiting 5 minutes...")
-            time.sleep(300)  # Wait 5 minutes
+            print(f"⏳ Attempt {attempt + 1}/{max_attempts}: Order not confirmed yet. Waiting 30 seconds...")
+            time.sleep(30)  # Wait 30 seconds instead of 5 minutes
 
-        print(f"Order {shopify_order_id} confirmation timeout after 24 hours")
+        print(f"⏰ Order {shopify_order_id} confirmation timeout after 1 hour")
         return False
 
     def cancel_order_in_transimpex(self, shopify_order_id):
@@ -852,14 +848,19 @@ def handle_order_paid():
         }
 
         update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-
         response = requests.put(update_url, json=update_data, headers=automation.shopify_headers)
 
         if response.status_code == 200:
-            # Start confirmation checking process in background
-            check_confirmation_in_background(order_id)
+            # IMMEDIATE CHECK: Check if order is already confirmed
+            print("🔍 Performing immediate confirmation check...")
+            if automation.wait_for_confirmation(order_id):
+                print(f"✅ Order {order_number} was already confirmed! Processing immediately.")
+                process_confirmed_order(order_id)
+            else:
+                # Start confirmation checking process in background
+                check_confirmation_in_background(order_id)
+                print(f"⏳ Order {order_number} saved. Add 'confirmed' tag in Shopify to ship.")
 
-            print(f"✅ Order {order_number} saved. Add 'confirmed' tag in Shopify to ship.")
             return jsonify({
                 "success": True,
                 "message": "Order saved pending confirmation. Tag order with 'confirmed' when ready to ship."
