@@ -73,38 +73,41 @@ class EHDMService:
     def extract_customer_data(self, shopify_order):
         """
         Extract customer data using priority-based fallback system
-        Returns: dict with name, address, city, province, phone
+        Now includes customer.default_address as a data source
         """
         shipping_address = shopify_order.get('shipping_address', {})
         billing_address = shopify_order.get('billing_address', {})
         customer = shopify_order.get('customer', {})
+        default_address = customer.get('default_address', {})
         
         print("=== DEBUG Customer Data Extraction ===")
         print(f"Shipping Address: {shipping_address}")
         print(f"Billing Address: {billing_address}")
-        print(f"Customer Object: {customer}")
+        print(f"Customer Object: {list(customer.keys()) if customer else 'No customer'}")
+        print(f"Default Address: {default_address}")
         
-        # Priority 1: Extract name with fallbacks
-        name = self._extract_name(shipping_address, billing_address, customer)
+        # Priority 1: Extract name with fallbacks (now includes default_address)
+        name = self._extract_name(shipping_address, billing_address, customer, default_address)
         
-        # Priority 2: Extract address with fallbacks
-        address = self._extract_address(shipping_address, billing_address)
+        # Priority 2: Extract address with fallbacks (now includes default_address)
+        address = self._extract_address(shipping_address, billing_address, default_address)
         
-        # Priority 3: Extract phone with fallbacks
-        phone = self._extract_phone(shipping_address, billing_address, customer)
+        # Priority 3: Extract phone with fallbacks (now includes default_address)
+        phone = self._extract_phone(shipping_address, billing_address, customer, default_address)
         
-        # Priority 4: Extract city with fallbacks
-        city = self._extract_city(shipping_address, billing_address)
+        # Priority 4: Extract city with fallbacks (now includes default_address)
+        city = self._extract_city(shipping_address, billing_address, default_address)
         
-        # Priority 5: Extract province with fallbacks
-        province = self._extract_province(shipping_address, billing_address)
+        # Priority 5: Extract province with fallbacks (now includes default_address)
+        province = self._extract_province(shipping_address, billing_address, default_address)
         
         customer_data = {
             'name': name,
             'address': address,
             'phone': phone,
             'city': city,
-            'province': province
+            'province': province,
+            'email': customer.get('email', '')  # Add email for better identification
         }
         
         print(f"Extracted Customer Data: {customer_data}")
@@ -112,8 +115,8 @@ class EHDMService:
         
         return customer_data
 
-    def _extract_name(self, shipping_address, billing_address, customer):
-        """Extract customer name with fallbacks"""
+    def _extract_name(self, shipping_address, billing_address, customer, default_address):
+        """Extract customer name with fallbacks including default_address"""
         # Try shipping address first
         if shipping_address.get('first_name') or shipping_address.get('last_name'):
             first_name = shipping_address.get('first_name', '').strip()
@@ -128,6 +131,13 @@ class EHDMService:
             if first_name or last_name:
                 return f"{first_name} {last_name}".strip()
         
+        # Try default address
+        if default_address.get('first_name') or default_address.get('last_name'):
+            first_name = default_address.get('first_name', '').strip()
+            last_name = default_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
         # Try customer object
         if customer.get('first_name') or customer.get('last_name'):
             first_name = customer.get('first_name', '').strip()
@@ -135,11 +145,16 @@ class EHDMService:
             if first_name or last_name:
                 return f"{first_name} {last_name}".strip()
         
+        # Use email as last resort for identification
+        email = customer.get('email', '')
+        if email:
+            return email.split('@')[0]  # Use part before @ as name
+        
         # Final fallback
         return "Customer"
 
-    def _extract_address(self, shipping_address, billing_address):
-        """Extract address with fallbacks"""
+    def _extract_address(self, shipping_address, billing_address, default_address):
+        """Extract address with fallbacks including default_address"""
         # Try shipping address first
         if shipping_address.get('address1'):
             address1 = shipping_address.get('address1', '').strip()
@@ -156,11 +171,19 @@ class EHDMService:
             if address:
                 return address
         
+        # Try default address
+        if default_address.get('address1'):
+            address1 = default_address.get('address1', '').strip()
+            address2 = default_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
         # Final fallback
         return "Address Not Provided"
 
-    def _extract_phone(self, shipping_address, billing_address, customer):
-        """Extract phone number with fallbacks"""
+    def _extract_phone(self, shipping_address, billing_address, customer, default_address):
+        """Extract phone number with fallbacks including default_address"""
         # Try shipping address first
         if shipping_address.get('phone'):
             phone = shipping_address.get('phone', '').strip()
@@ -173,6 +196,12 @@ class EHDMService:
             if phone:
                 return phone
         
+        # Try default address
+        if default_address.get('phone'):
+            phone = default_address.get('phone', '').strip()
+            if phone:
+                return phone
+        
         # Try customer object
         if customer.get('phone'):
             phone = customer.get('phone', '').strip()
@@ -182,8 +211,8 @@ class EHDMService:
         # Final fallback
         return "+374 00 000 000"
 
-    def _extract_city(self, shipping_address, billing_address):
-        """Extract city with fallbacks"""
+    def _extract_city(self, shipping_address, billing_address, default_address):
+        """Extract city with fallbacks including default_address"""
         # Try shipping address first
         if shipping_address.get('city'):
             city = shipping_address.get('city', '').strip()
@@ -196,11 +225,17 @@ class EHDMService:
             if city:
                 return city
         
+        # Try default address
+        if default_address.get('city'):
+            city = default_address.get('city', '').strip()
+            if city:
+                return city
+        
         # Final fallback
-        return "Unknown"
+        return "Yerevan"  # Most common city in Armenia
 
-    def _extract_province(self, shipping_address, billing_address):
-        """Extract province with fallbacks"""
+    def _extract_province(self, shipping_address, billing_address, default_address):
+        """Extract province with fallbacks including default_address"""
         # Try shipping address first
         if shipping_address.get('province'):
             return shipping_address.get('province')
@@ -209,8 +244,12 @@ class EHDMService:
         if billing_address.get('province'):
             return billing_address.get('province')
         
-        # Final fallback
-        return None
+        # Try default address
+        if default_address.get('province'):
+            return default_address.get('province')
+        
+        # Final fallback - default to Yerevan
+        return "Yerevan"
 
     def create_courier_order(self, shopify_order):
         """Create draft order with courier and get tracking number"""
@@ -264,7 +303,7 @@ class EHDMService:
             "is_payed": 1,
             "delivery_method": "home",
             "return_receipt": False,
-            "notes": f"Shopify Order #{shopify_order.get('order_number', '')}",
+            "notes": f"Shopify Order #{shopify_order.get('order_number', '')} - {customer_data['email']}",
             "label": 0
         }
 
@@ -376,14 +415,50 @@ class EHDMService:
                         print(f"❌ Shopify fulfillment failed: {response.status_code} - {response.text}")
                         # Debug the response
                         print(f"=== DEBUG Shopify Response: {response.text} ===")
+                        
+                        # Try alternative fulfillment method
+                        return self._alternative_shopify_fulfillment(order_id, tracking_number, shopify_headers)
             else:
                 print(f"❌ Failed to get fulfillment orders: {fulfillment_response.status_code} - {fulfillment_response.text}")
+                # Try alternative fulfillment method
+                return self._alternative_shopify_fulfillment(order_id, tracking_number, shopify_headers)
 
         except Exception as e:
             print(f"❌ Error updating Shopify tracking: {str(e)}")
+            # Try alternative fulfillment method
+            return self._alternative_shopify_fulfillment(order_id, tracking_number, shopify_headers)
 
-        print("❌ Failed to update Shopify with tracking")
         return False
+
+    def _alternative_shopify_fulfillment(self, order_id, tracking_number, shopify_headers):
+        """Alternative method to update Shopify tracking if primary method fails"""
+        print(f"🔄 Trying alternative Shopify fulfillment for order {order_id}")
+        
+        try:
+            # Simple fulfillment without fulfillment orders
+            fulfillment_data = {
+                "fulfillment": {
+                    "location_id": 1,
+                    "tracking_number": str(tracking_number),
+                    "tracking_company": "TransImpex Express",
+                    "tracking_url": f"https://transimpexexpress.am/tracking/{tracking_number}",
+                    "notify_customer": True
+                }
+            }
+
+            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
+            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+            if response.status_code in [201, 200]:
+                print("✅ Shopify order updated with tracking (alternative method)!")
+                return True
+            else:
+                print(f"❌ Alternative Shopify fulfillment failed: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Alternative Shopify fulfillment error: {str(e)}")
+            return False
 
     def notify_team(self, shopify_order, tracking_number):
         """Notify about the new order"""
@@ -393,6 +468,7 @@ class EHDMService:
         message = f"🚚 NEW SHIPPING ORDER\n"
         message += f"Order #: {shopify_order.get('order_number')}\n"
         message += f"Customer: {customer_data['name']}\n"
+        message += f"Email: {customer_data['email']}\n"
         message += f"Tracking ID: {tracking_number}\n"
         message += f"Address: {customer_data['address']}\n"
         message += f"Phone: {customer_data['phone']}\n"
