@@ -4,8 +4,6 @@ import json
 import os
 import time
 import hashlib
-import atexit
-from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -547,22 +545,6 @@ def generate_webhook_id(webhook_data):
     webhook_str = json.dumps(webhook_data, sort_keys=True)
     return hashlib.md5(webhook_str.encode()).hexdigest()
 
-def check_confirmed_orders_job():
-    """Background job to check for confirmed orders"""
-    try:
-        automation = CourierAutomation()
-        automation.check_and_process_confirmed_orders()
-    except Exception as e:
-        print(f"❌ Background job error: {str(e)}")
-
-# Setup scheduler
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=check_confirmed_orders_job, trigger="interval", minutes=2)
-scheduler.start()
-
-# Shut down the scheduler when exiting the app
-atexit.register(lambda: scheduler.shutdown())
-
 @app.route('/webhook/order-paid', methods=['POST'])
 def handle_order_paid():
     """Webhook endpoint that Shopify calls when order is paid"""
@@ -599,11 +581,11 @@ def handle_order_paid():
             # Add to pending orders for automatic processing
             pending_orders.add(order_id)
             print(f"✅ Order {order_number} added to pending orders (total: {len(pending_orders)})")
-            print(f"🎯 System will automatically process when 'confirmed' tag is added (checks every 2 minutes)")
+            print(f"💡 Add 'confirmed' tag in Shopify, then call /process-confirmed to auto-process all confirmed orders")
             
             return jsonify({
                 "success": True,
-                "message": "Order saved pending confirmation. System will auto-process when 'confirmed' tag is added."
+                "message": "Order saved pending confirmation. Add 'confirmed' tag, then call /process-confirmed"
             }), 200
         else:
             print(f"❌ Failed to update order tags: {response.text}")
@@ -614,6 +596,24 @@ def handle_order_paid():
 
     except Exception as e:
         print(f"❌ Error processing webhook: {str(e)}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/process-confirmed', methods=['POST'])
+def process_confirmed_orders():
+    """Process all confirmed orders at once"""
+    print("🔄 Processing all confirmed orders...")
+    
+    try:
+        automation = CourierAutomation()
+        automation.check_and_process_confirmed_orders()
+        
+        return jsonify({
+            "success": True, 
+            "message": f"Processed confirmed orders. {len(pending_orders)} orders still pending."
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error processing confirmed orders: {str(e)}")
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/process-order/<order_id>', methods=['POST'])
@@ -652,9 +652,21 @@ def health_check():
 
 @app.route('/')
 def home():
-    return "🚚 AUTOMATIC Shipping Automation Server is Running!<br><br>Endpoints:<br>- POST /webhook/order-paid<br>- POST /process-order/&lt;order_id&gt;<br>- GET /pending-orders<br>- GET /health<br><br>System automatically checks for confirmed orders every 2 minutes!"
+    return """
+    🚚 Shipping Automation Server is Running!<br><br>
+    <strong>Endpoints:</strong><br>
+    - POST /webhook/order-paid (auto-adds pending-confirmation tag)<br>
+    - POST /process-confirmed (processes ALL confirmed orders)<br>
+    - POST /process-order/&lt;order_id&gt; (process specific order)<br>
+    - GET /pending-orders (view pending orders)<br>
+    - GET /health<br><br>
+    <strong>Workflow:</strong><br>
+    1. Webhook auto-tags orders as 'pending-confirmation'<br>
+    2. Add 'confirmed' tag in Shopify<br>
+    3. Call POST /process-confirmed to process all confirmed orders<br>
+    """
 
 if __name__ == '__main__':
-    print("🚀 Starting AUTOMATIC Shipping Automation Server...")
-    print("✅ Background scheduler started - checking for confirmed orders every 2 minutes")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    port = int(os.environ.get('PORT', 10000))
+    print(f"🚀 Starting Shipping Automation Server on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=False)
