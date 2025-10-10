@@ -72,10 +72,17 @@ class EHDMService:
         default_address = customer.get('default_address', {})
         
         print("=== DEBUG Customer Data Extraction ===")
+        print(f"Order Email: {shopify_order.get('email')}")
+        print(f"Contact Email: {shopify_order.get('contact_email')}")
         print(f"Shipping Address: {shipping_address}")
         print(f"Billing Address: {billing_address}")
-        print(f"Customer Object: {list(customer.keys()) if customer else 'No customer'}")
+        print(f"Customer Object: {customer}")
         print(f"Default Address: {default_address}")
+        
+        # Try to get phone from order level first
+        order_phone = shopify_order.get('phone')
+        if order_phone:
+            print(f"📞 Found phone at order level: {order_phone}")
         
         # Priority 1: Extract name with fallbacks
         name = self._extract_name(shipping_address, billing_address, customer, default_address)
@@ -83,8 +90,8 @@ class EHDMService:
         # Priority 2: Extract address with fallbacks
         address = self._extract_address(shipping_address, billing_address, default_address)
         
-        # Priority 3: Extract phone with fallbacks
-        phone = self._extract_phone(shipping_address, billing_address, customer, default_address)
+        # Priority 3: Extract phone with fallbacks - include order level phone
+        phone = order_phone or self._extract_phone(shipping_address, billing_address, customer, default_address)
         
         # Priority 4: Extract city with fallbacks
         city = self._extract_city(shipping_address, billing_address, default_address)
@@ -92,16 +99,19 @@ class EHDMService:
         # Priority 5: Extract province with fallbacks
         province = self._extract_province(shipping_address, billing_address, default_address)
         
+        # Use order email as priority
+        email = shopify_order.get('email') or shopify_order.get('contact_email') or customer.get('email', '')
+        
         customer_data = {
             'name': name,
             'address': address,
             'phone': phone,
             'city': city,
             'province': province,
-            'email': customer.get('email', '')
+            'email': email
         }
         
-        print(f"🎯 Extracted Customer Data: {customer_data}")
+        print(f"🎯 Final Extracted Customer Data: {customer_data}")
         print("=== END DEBUG ===")
         
         return customer_data
@@ -237,7 +247,7 @@ class EHDMService:
         
         return "Yerevan"
 
-    def create_courier_order(self, shopify_order):
+    def create_courier_order(self, shopify_order, retry_count=0):
         """Create draft order with courier using REAL customer data"""
         print("🔄 Creating courier order...")
 
@@ -266,6 +276,14 @@ class EHDMService:
                 "price": 100
             })
 
+        # Generate barcode_id with retry suffix if needed
+        base_barcode_id = str(shopify_order['id'])
+        if retry_count > 0:
+            barcode_id = f"{base_barcode_id}-retry{retry_count}"
+            print(f"🔄 Using retry barcode_id: {barcode_id}")
+        else:
+            barcode_id = base_barcode_id
+
         # Construct the API payload with REAL customer data
         courier_order_data = {
             "address_to": customer_data['address'][:100],
@@ -277,7 +295,7 @@ class EHDMService:
             "recipient_type": "Individual",
             "person_name": customer_data['name'][:50],
             "phone": customer_data['phone'][:20],
-            "barcode_id": str(shopify_order['id']),
+            "barcode_id": barcode_id,
             "is_payed": 1,
             "delivery_method": "home",
             "return_receipt": False,
@@ -304,13 +322,20 @@ class EHDMService:
                     courier_response.get('order', {}).get('key') or
                     courier_response.get('order', {}).get('barcode_id') or
                     courier_response.get('order', {}).get('id') or
-                    str(shopify_order['id'])
+                    barcode_id
                 )
                 print(f"✅ Real tracking number: {tracking_number}")
                 return tracking_number
             except:
-                print("⚠️ Could not parse courier response, using Shopify ID as tracking")
-                return str(shopify_order['id'])
+                print("⚠️ Could not parse courier response, using barcode_id as tracking")
+                return barcode_id
+        elif response.status_code == 422 and "barcode id has already been taken" in response.text.lower():
+            print(f"🔄 Barcode ID conflict detected, retrying with new ID...")
+            if retry_count < 3:  # Max 3 retries
+                return self.create_courier_order(shopify_order, retry_count + 1)
+            else:
+                print("❌ Max retries reached for barcode_id conflict")
+                return None
         else:
             print(f"❌ Courier API Error: {response.status_code} - {response.text}")
             return None
@@ -320,14 +345,51 @@ class EHDMService:
         print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
 
         try:
-            # Simple fulfillment without fulfillment orders
+            # First, get the order to find available locations
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            order_response = requests.get(order_url, headers=shopify_headers)
+            
+            if order_response.status_code != 200:
+                print(f"❌ Failed to fetch order details: {order_response.status_code}")
+                return False
+
+            order_data = order_response.json().get('order', {})
+            
+            # Try to use the first available location from line items
+            location_id = None
+            for line_item in order_data.get('line_items', []):
+                if line_item.get('location_id'):
+                    location_id = line_item['location_id']
+                    break
+            
+            # If no location found, use a default or get available locations
+            if not location_id:
+                # Get first available location from Shopify
+                locations_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/locations.json"
+                locations_response = requests.get(locations_url, headers=shopify_headers)
+                if locations_response.status_code == 200:
+                    locations = locations_response.json().get('locations', [])
+                    if locations:
+                        location_id = locations[0]['id']
+                        print(f"📍 Using default location ID: {location_id}")
+                    else:
+                        print("❌ No locations available in Shopify")
+                        return False
+                else:
+                    print(f"❌ Failed to fetch locations: {locations_response.status_code}")
+                    return False
+
+            # Updated fulfillment data with proper location
             fulfillment_data = {
                 "fulfillment": {
-                    "location_id": 1,
+                    "location_id": location_id,
                     "tracking_number": str(tracking_number),
                     "tracking_company": "TransImpex Express",
-                    "tracking_url": f"https://transimpexexpress.am/tracking/{tracking_number}",
-                    "notify_customer": True
+                    "tracking_urls": [
+                        f"https://transimpexexpress.am/tracking/{tracking_number}"
+                    ],
+                    "notify_customer": True,
+                    "line_items": []  # Let Shopify auto-fulfill all items
                 }
             }
 
@@ -336,6 +398,16 @@ class EHDMService:
 
             if response.status_code in [201, 200]:
                 print("✅ Shopify order updated with tracking successfully!")
+                
+                # Also update order tags to mark as processed
+                update_tags_data = {
+                    "order": {
+                        "id": order_id,
+                        "tags": "processed,fulfilled"
+                    }
+                }
+                requests.put(order_url, json=update_tags_data, headers=shopify_headers)
+                
                 return True
             else:
                 print(f"❌ Shopify fulfillment failed: {response.status_code} - {response.text}")
@@ -361,13 +433,59 @@ class CourierAutomation:
             'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN
         }
 
+    def is_order_already_processed(self, order_id):
+        """Check if order was already processed by our system"""
+        # Check our local memory store first
+        if order_id in processed_orders:
+            print(f"📋 Order {order_id} found in processed orders cache")
+            return True
+        
+        # Check Shopify for existing TransImpex fulfillment
+        try:
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            response = requests.get(order_url, headers=self.shopify_headers)
+
+            if response.status_code == 200:
+                shopify_order = response.json().get('order', {})
+                
+                # Check if order already has OUR fulfillment
+                for fulfillment in shopify_order.get('fulfillments', []):
+                    if fulfillment.get('tracking_company') == 'TransImpex Express':
+                        print(f"✅ Order {order_id} already processed by our system (found in Shopify)")
+                        # Cache this result
+                        processed_orders[order_id] = True
+                        return True
+                
+                # Check if order has our tracking tags
+                tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
+                if 'processed' in tags or 'shipped' in tags:
+                    print(f"✅ Order {order_id} marked as processed in tags")
+                    processed_orders[order_id] = True
+                    return True
+                    
+        except Exception as e:
+            print(f"⚠️ Error checking if order {order_id} was processed: {str(e)}")
+        
+        return False
+
+    def mark_order_as_processed(self, order_id):
+        """Mark order as processed in our system"""
+        processed_orders[order_id] = True
+        print(f"📝 Marked order {order_id} as processed in local cache")
+
     def process_order_immediately(self, order_id):
         """Process order immediately with PayX and Courier"""
         print(f"🚀 PROCESSING ORDER {order_id}")
         
         try:
-            # Get COMPLETE order details from Shopify API
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            # Check if order was already processed
+            if self.is_order_already_processed(order_id):
+                print(f"⏭️ Order {order_id} was already processed, skipping duplicate")
+                return True
+            
+            # Get COMPLETE order details from Shopify API with ALL fields
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json?fields=id,order_number,email,created_at,updated_at,processed_at,total_price,total_tax,subtotal_price,total_discounts,total_line_items_price,total_shipping_price_set,taxes_included,currency,financial_status,confirmed,customer,contact_email,customer_locale,buyer_accepts_marketing,cancel_reason,cancelled_at,cart_token,checkout_token,checkout_id,gateway,landing_site,referring_site,user_id,location_id,source_identifier,source_url,device_id,phone,customer_first_name,customer_last_name,customer_orders_count,customer_total_spent,tags,note,attributes,payment_gateway_names,tax_exempt,tax_lines,payment_details,payment_terms,processing_method,source_name,fulfillment_status,line_items,shipping_address,billing_address,fulfillments,refunds,shipping_lines,discount_codes,discount_allocations,note_attributes"
+            
             response = requests.get(order_url, headers=self.shopify_headers)
 
             if response.status_code != 200:
@@ -376,16 +494,15 @@ class CourierAutomation:
 
             shopify_order = response.json().get('order', {})
             
-            # Check if order already has OUR fulfillment
-            has_our_tracking = False
-            for fulfillment in shopify_order.get('fulfillments', []):
-                if fulfillment.get('tracking_company') == 'TransImpex Express':
-                    has_our_tracking = True
-                    break
-            
-            if has_our_tracking:
-                print(f"✅ Order {order_id} already processed by our system, skipping")
-                return True
+            # DEBUG: Check what data we actually received
+            print("=== DEBUG FULL ORDER DATA ===")
+            print(f"Order #: {shopify_order.get('order_number')}")
+            print(f"Shipping Address: {shopify_order.get('shipping_address')}")
+            print(f"Billing Address: {shopify_order.get('billing_address')}")
+            print(f"Customer: {shopify_order.get('customer')}")
+            print(f"Email: {shopify_order.get('email')}")
+            print(f"Contact Email: {shopify_order.get('contact_email')}")
+            print("=== END DEBUG ===")
             
             # Process with EHDM service
             ehdm_service = EHDMService()
@@ -406,6 +523,8 @@ class CourierAutomation:
 
                 if success:
                     print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
+                    # Mark as processed to prevent duplicates
+                    self.mark_order_as_processed(order_id)
                     return True
                 else:
                     print(f"❌ Failed to update Shopify with tracking for order {order_id}")
@@ -556,7 +675,11 @@ def home():
     <strong>SYSTEM STATUS: ACTIVE</strong><br>
     - ✅ Webhook auto-tags orders as 'pending-confirmation'<br>
     - ✅ Order-updated webhook detects 'confirmed' tags immediately<br>
-    - ✅ Auto-processes confirmed orders with REAL customer data<br><br>
+    - ✅ Auto-processes confirmed orders with REAL customer data<br>
+    - ✅ DUPLICATE DETECTION: Prevents re-processing same orders<br>
+    - ✅ BARCODE RETRY: Auto-retry with new IDs on conflicts<br>
+    - ✅ COMPLETE ORDER DATA: Fetches full customer details from API<br>
+    - ✅ SMART SHOPIFY FULFILLMENT: Dynamic location handling<br><br>
     
     <strong>Setup Required:</strong><br>
     1. Add Shopify webhook: orders/updated → /webhook/order-updated<br>
