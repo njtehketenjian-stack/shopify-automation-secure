@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # Add this import
 import requests
 import json
 import os
@@ -16,6 +17,7 @@ COURIER_API_KEY = os.getenv('COURIER_API_KEY')
 COURIER_BASE_URL = "https://transimpexexpress.am"
 
 app = Flask(__name__)
+CORS(app)  # Add this line to enable CORS
 
 # Simple in-memory stores
 processed_webhooks = {}
