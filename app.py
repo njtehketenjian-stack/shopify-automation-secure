@@ -30,6 +30,12 @@ class EHDMService:
     def __init__(self):
         self.base_url = "https://store.payx.am"
         self.token = None
+        # FIX: Added courier headers
+        self.courier_headers = {
+            'Authorization': f'Bearer {COURIER_API_KEY}',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
     
     def login(self):
         """Get JWT token from E-HDM API"""
@@ -140,13 +146,13 @@ class EHDMService:
             print(f"❌ Courier API Error: {response.status_code} - {response.text}")
             return None
 
-    def update_shopify_tracking(self, order_id, tracking_number):
+    def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
         """Add tracking number to Shopify order and fulfill it"""
         print(f"Updating Shopify order {order_id} with tracking {tracking_number}")
 
         # Get fulfillment order ID
         fulfillment_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
-        fulfillment_response = requests.get(fulfillment_url, headers=self.shopify_headers)
+        fulfillment_response = requests.get(fulfillment_url, headers=shopify_headers)
 
         if fulfillment_response.status_code == 200:
             fulfillment_data = fulfillment_response.json()
@@ -171,7 +177,7 @@ class EHDMService:
                 }
 
                 fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
-                response = requests.post(fulfill_url, json=fulfillment_data, headers=self.shopify_headers)
+                response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
 
                 if response.status_code == 200:
                     print("✅ Shopify order updated with tracking successfully!")
@@ -445,16 +451,16 @@ def process_confirmed_order(order_id):
         else:
             print("❌ PayX login failed, but continuing with shipping")
         
-        # Create order with courier
-        tracking_number = automation.create_courier_order(shopify_order)
+        # Create order with courier using EHDMService (which now has proper headers)
+        tracking_number = ehdm_service.create_courier_order(shopify_order)
 
         if tracking_number:
             # Update Shopify with tracking and fulfill
-            success = automation.update_shopify_tracking(order_id, tracking_number)
+            success = ehdm_service.update_shopify_tracking(order_id, tracking_number, automation.shopify_headers)
 
             if success:
                 # Notify courier team
-                automation.notify_team(shopify_order, tracking_number)
+                ehdm_service.notify_team(shopify_order, tracking_number)
                 print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
             else:
                 print(f"❌ Failed to update Shopify with tracking for order {order_id}")
