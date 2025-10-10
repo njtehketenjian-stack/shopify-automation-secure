@@ -99,16 +99,16 @@ class EHDMService:
                 "price": 100
             })
 
-        # Construct the API payload
+        # Construct the API payload - FIXED: Added default values
         courier_order_data = {
-            "address_to": shipping_address.get('address1', '')[:100],
+            "address_to": shipping_address.get('address1', 'Default Address')[:100],
             "province_id": self.map_region_to_province(shipping_address.get('province')),
             "city": shipping_address.get('city', '')[:50],
             "package_type": "Parcel",
             "parcel_weight": "1.0",
             "order_products": order_products,
             "recipient_type": "Individual",
-            "person_name": f"{shipping_address.get('first_name', '')} {shipping_address.get('last_name', '')}"[:50],
+            "person_name": f"{shipping_address.get('first_name', 'Customer')} {shipping_address.get('last_name', 'Name')}"[:50].strip(),
             "phone": shipping_address.get('phone', '123456789')[:20],
             "barcode_id": str(shopify_order['id']),
             "is_payed": 1,
@@ -117,6 +117,11 @@ class EHDMService:
             "notes": f"Shopify Order #{shopify_order.get('order_number', '')}",
             "label": 0
         }
+
+        # DEBUG: Print the actual payload being sent
+        print("=== DEBUG Courier Payload ===")
+        print(json.dumps(courier_order_data, indent=2))
+        print("=== END DEBUG ===")
 
         # Make API call to create draft order
         courier_url = f"{COURIER_BASE_URL}/api/create-draft-order"
