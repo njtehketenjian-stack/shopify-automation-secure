@@ -4,6 +4,8 @@ import json
 import os
 import time
 import hashlib
+import atexit
+from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -19,8 +21,9 @@ EHDM_PASSWORD = os.getenv('EHDM_PASSWORD')
 
 app = Flask(__name__)
 
-# Simple in-memory store
+# Simple in-memory stores
 processed_webhooks = {}
+pending_orders = set()
 
 class EHDMService:
     def __init__(self):
@@ -435,6 +438,49 @@ class CourierAutomation:
             'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN
         }
 
+    def check_and_process_confirmed_orders(self):
+        """Check all pending orders and process confirmed ones"""
+        print("🔍 Checking for confirmed orders...")
+        
+        if not pending_orders:
+            print("📭 No pending orders to check")
+            return
+        
+        processed_orders = []
+        
+        for order_id in list(pending_orders):  # Create a copy to avoid modification during iteration
+            try:
+                # Get order details from Shopify
+                order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+                response = requests.get(order_url, headers=self.shopify_headers)
+
+                if response.status_code != 200:
+                    print(f"❌ Failed to fetch order {order_id}: {response.status_code}")
+                    continue
+
+                shopify_order = response.json().get('order', {})
+                
+                # Check if order is confirmed
+                tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
+                
+                if 'confirmed' in tags:
+                    print(f"🎉 Order {order_id} is confirmed! Processing...")
+                    success = self.process_order_immediately(order_id)
+                    
+                    if success:
+                        pending_orders.remove(order_id)
+                        processed_orders.append(order_id)
+                else:
+                    print(f"⏳ Order {order_id} still pending confirmation")
+                    
+            except Exception as e:
+                print(f"❌ Error checking order {order_id}: {str(e)}")
+        
+        if processed_orders:
+            print(f"✅ Processed {len(processed_orders)} orders: {processed_orders}")
+        else:
+            print("📋 No new confirmed orders found")
+
     def process_order_immediately(self, order_id):
         """Process order immediately"""
         print(f"🚀 PROCESSING ORDER {order_id} IMMEDIATELY")
@@ -449,13 +495,6 @@ class CourierAutomation:
                 return False
 
             shopify_order = response.json().get('order', {})
-            
-            # Check if order is confirmed
-            tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
-            
-            if 'confirmed' not in tags:
-                print(f"❌ Order {order_id} not confirmed yet. Tags: {tags}")
-                return False
             
             # Check if order already has OUR fulfillment
             has_our_tracking = False
@@ -508,6 +547,22 @@ def generate_webhook_id(webhook_data):
     webhook_str = json.dumps(webhook_data, sort_keys=True)
     return hashlib.md5(webhook_str.encode()).hexdigest()
 
+def check_confirmed_orders_job():
+    """Background job to check for confirmed orders"""
+    try:
+        automation = CourierAutomation()
+        automation.check_and_process_confirmed_orders()
+    except Exception as e:
+        print(f"❌ Background job error: {str(e)}")
+
+# Setup scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=check_confirmed_orders_job, trigger="interval", minutes=2)
+scheduler.start()
+
+# Shut down the scheduler when exiting the app
+atexit.register(lambda: scheduler.shutdown())
+
 @app.route('/webhook/order-paid', methods=['POST'])
 def handle_order_paid():
     """Webhook endpoint that Shopify calls when order is paid"""
@@ -541,12 +596,14 @@ def handle_order_paid():
         response = requests.put(update_url, json=update_data, headers=automation.shopify_headers)
 
         if response.status_code == 200:
-            print(f"✅ Order {order_number} tagged as 'pending-confirmation'")
-            print(f"💡 Add 'confirmed' tag in Shopify, then call /process-order/{order_id} to ship")
+            # Add to pending orders for automatic processing
+            pending_orders.add(order_id)
+            print(f"✅ Order {order_number} added to pending orders (total: {len(pending_orders)})")
+            print(f"🎯 System will automatically process when 'confirmed' tag is added (checks every 2 minutes)")
             
             return jsonify({
                 "success": True,
-                "message": f"Order saved pending confirmation. Add 'confirmed' tag, then call /process-order/{order_id}"
+                "message": "Order saved pending confirmation. System will auto-process when 'confirmed' tag is added."
             }), 200
         else:
             print(f"❌ Failed to update order tags: {response.text}")
@@ -569,6 +626,9 @@ def process_order_manual(order_id):
         success = automation.process_order_immediately(order_id)
         
         if success:
+            # Remove from pending if it was there
+            if order_id in pending_orders:
+                pending_orders.remove(order_id)
             return jsonify({"success": True, "message": f"Order {order_id} processed successfully"}), 200
         else:
             return jsonify({"success": False, "message": f"Failed to process order {order_id}"}), 500
@@ -577,14 +637,24 @@ def process_order_manual(order_id):
         print(f"❌ Error in manual order processing: {str(e)}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+@app.route('/pending-orders', methods=['GET'])
+def get_pending_orders():
+    """Get list of pending orders"""
+    return jsonify({
+        "success": True,
+        "pending_orders": list(pending_orders),
+        "count": len(pending_orders)
+    }), 200
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "Shipping automation server is running"}), 200
 
 @app.route('/')
 def home():
-    return "🚚 Shipping Automation Server is Running!<br><br>Endpoints:<br>- POST /webhook/order-paid<br>- POST /process-order/&lt;order_id&gt;<br>- GET /health"
+    return "🚚 AUTOMATIC Shipping Automation Server is Running!<br><br>Endpoints:<br>- POST /webhook/order-paid<br>- POST /process-order/&lt;order_id&gt;<br>- GET /pending-orders<br>- GET /health<br><br>System automatically checks for confirmed orders every 2 minutes!"
 
 if __name__ == '__main__':
-    print("Starting Shipping Automation Server...")
+    print("🚀 Starting AUTOMATIC Shipping Automation Server...")
+    print("✅ Background scheduler started - checking for confirmed orders every 2 minutes")
     app.run(host='0.0.0.0', port=5000, debug=False)
