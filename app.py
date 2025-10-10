@@ -177,6 +177,39 @@ class EHDMService:
             print(f"❌ Courier API Error: {response.status_code} - {response.text}")
             return None
 
+    def cancel_courier_order(self, shopify_order_id, barcode_id):
+        """Cancel order in TransImpex when cancelled in Shopify"""
+        print(f"🔄 Attempting to cancel courier order for Shopify order {shopify_order_id}")
+        
+        try:
+            # First, we need to find the TransImpex order ID using barcode_id
+            search_url = f"{COURIER_BASE_URL}/api/orders?barcode_id={barcode_id}"
+            search_response = requests.get(search_url, headers=self.courier_headers)
+            
+            if search_response.status_code == 200:
+                orders_data = search_response.json()
+                if orders_data.get('data') and len(orders_data['data']) > 0:
+                    transimpex_order_id = orders_data['data'][0]['id']
+                    
+                    # Cancel the order
+                    cancel_url = f"{COURIER_BASE_URL}/api/orders/{transimpex_order_id}/cancel"
+                    cancel_response = requests.post(cancel_url, headers=self.courier_headers)
+                    
+                    if cancel_response.status_code == 200:
+                        print(f"✅ Successfully cancelled TransImpex order {transimpex_order_id} for Shopify order {shopify_order_id}")
+                        return True
+                    else:
+                        print(f"❌ Failed to cancel TransImpex order: {cancel_response.status_code} - {cancel_response.text}")
+                else:
+                    print(f"⚠️ No TransImpex order found with barcode_id: {barcode_id}")
+            else:
+                print(f"❌ Failed to search for TransImpex order: {search_response.status_code} - {search_response.text}")
+                
+        except Exception as e:
+            print(f"❌ Error cancelling courier order: {str(e)}")
+        
+        return False
+
     def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
         """Add tracking number to Shopify order and fulfill it"""
         print(f"Updating Shopify order {order_id} with tracking {tracking_number}")
@@ -283,6 +316,14 @@ class CourierAutomation:
             if response.status_code == 200:
                 order_data = response.json().get('order', {})
                 tags = order_data.get('tags', '').split(',')
+                
+                # DEBUG: Print order status
+                print(f"=== DEBUG Order Status ===")
+                print(f"Order ID: {shopify_order_id}")
+                print(f"Tags: {tags}")
+                print(f"Fulfillment Status: {order_data.get('fulfillment_status')}")
+                print(f"Financial Status: {order_data.get('financial_status')}")
+                print("=== END DEBUG ===")
 
                 # Check if order already has fulfillment (already processed)
                 if order_data.get('fulfillment_status') in ['fulfilled', 'partial']:
@@ -310,6 +351,8 @@ class CourierAutomation:
                 # Check if order is cancelled
                 elif 'cancelled' in [tag.strip().lower() for tag in tags]:
                     print(f"Order {shopify_order_id} was cancelled.")
+                    # Trigger cancellation in TransImpex
+                    self.cancel_order_in_transimpex(shopify_order_id)
                     return False
 
             print(f"Attempt {attempt + 1}: Order not confirmed yet. Waiting 5 minutes...")
@@ -317,6 +360,18 @@ class CourierAutomation:
 
         print(f"Order {shopify_order_id} confirmation timeout after 24 hours")
         return False
+
+    def cancel_order_in_transimpex(self, shopify_order_id):
+        """Cancel order in TransImpex when cancelled in Shopify"""
+        print(f"🔄 Processing cancellation for Shopify order {shopify_order_id}")
+        
+        ehdm_service = EHDMService()
+        success = ehdm_service.cancel_courier_order(shopify_order_id, str(shopify_order_id))
+        
+        if success:
+            print(f"✅ Successfully processed cancellation for order {shopify_order_id}")
+        else:
+            print(f"❌ Failed to cancel TransImpex order for {shopify_order_id}")
 
     def create_courier_order(self, shopify_order):
         """Create draft order with courier and get tracking number"""
