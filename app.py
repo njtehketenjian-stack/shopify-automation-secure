@@ -345,51 +345,16 @@ class EHDMService:
         print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
 
         try:
-            # First, get the order to find available locations
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            order_response = requests.get(order_url, headers=shopify_headers)
-            
-            if order_response.status_code != 200:
-                print(f"❌ Failed to fetch order details: {order_response.status_code}")
-                return False
-
-            order_data = order_response.json().get('order', {})
-            
-            # Try to use the first available location from line items
-            location_id = None
-            for line_item in order_data.get('line_items', []):
-                if line_item.get('location_id'):
-                    location_id = line_item['location_id']
-                    break
-            
-            # If no location found, use a default or get available locations
-            if not location_id:
-                # Get first available location from Shopify
-                locations_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/locations.json"
-                locations_response = requests.get(locations_url, headers=shopify_headers)
-                if locations_response.status_code == 200:
-                    locations = locations_response.json().get('locations', [])
-                    if locations:
-                        location_id = locations[0]['id']
-                        print(f"📍 Using default location ID: {location_id}")
-                    else:
-                        print("❌ No locations available in Shopify")
-                        return False
-                else:
-                    print(f"❌ Failed to fetch locations: {locations_response.status_code}")
-                    return False
-
-            # Updated fulfillment data with proper location
+            # Simplified fulfillment - let Shopify handle location automatically
             fulfillment_data = {
                 "fulfillment": {
-                    "location_id": location_id,
                     "tracking_number": str(tracking_number),
                     "tracking_company": "TransImpex Express",
                     "tracking_urls": [
                         f"https://transimpexexpress.am/tracking/{tracking_number}"
                     ],
-                    "notify_customer": True,
-                    "line_items": []  # Let Shopify auto-fulfill all items
+                    "notify_customer": True
+                    # Remove location_id completely - let Shopify auto-select
                 }
             }
 
@@ -400,6 +365,7 @@ class EHDMService:
                 print("✅ Shopify order updated with tracking successfully!")
                 
                 # Also update order tags to mark as processed
+                order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
                 update_tags_data = {
                     "order": {
                         "id": order_id,
@@ -679,7 +645,7 @@ def home():
     - ✅ DUPLICATE DETECTION: Prevents re-processing same orders<br>
     - ✅ BARCODE RETRY: Auto-retry with new IDs on conflicts<br>
     - ✅ COMPLETE ORDER DATA: Fetches full customer details from API<br>
-    - ✅ SMART SHOPIFY FULFILLMENT: Dynamic location handling<br><br>
+    - ✅ SIMPLIFIED FULFILLMENT: No location API conflicts<br><br>
     
     <strong>Setup Required:</strong><br>
     1. Add Shopify webhook: orders/updated → /webhook/order-updated<br>
