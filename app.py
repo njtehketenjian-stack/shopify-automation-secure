@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # Add this import
 import requests
 import json
 import os
@@ -19,11 +20,12 @@ EHDM_USERNAME = os.getenv('EHDM_USERNAME')
 EHDM_PASSWORD = os.getenv('EHDM_PASSWORD')
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 # Simple in-memory stores
 processed_webhooks = {}
 pending_orders = set()
-processed_orders = set()  # Track processed orders to avoid duplicates
+processed_orders = set()
 
 class EHDMService:
     def __init__(self):
@@ -63,34 +65,25 @@ class EHDMService:
         return False
 
     def extract_customer_data(self, shopify_order):
-        """
-        Extract customer data using priority-based fallback system
-        Now includes customer.default_address as a data source
-        """
+        """Extract customer data using priority-based fallback system"""
         shipping_address = shopify_order.get('shipping_address', {})
         billing_address = shopify_order.get('billing_address', {})
         customer = shopify_order.get('customer', {})
         default_address = customer.get('default_address', {})
         
-        print("=== DEBUG Customer Data Extraction ===")
-        print(f"Shipping Address: {shipping_address}")
-        print(f"Billing Address: {billing_address}")
-        print(f"Customer Object: {list(customer.keys()) if customer else 'No customer'}")
-        print(f"Default Address: {default_address}")
-        
-        # Priority 1: Extract name with fallbacks (now includes default_address)
+        # Priority 1: Extract name with fallbacks
         name = self._extract_name(shipping_address, billing_address, customer, default_address)
         
-        # Priority 2: Extract address with fallbacks (now includes default_address)
+        # Priority 2: Extract address with fallbacks
         address = self._extract_address(shipping_address, billing_address, default_address)
         
-        # Priority 3: Extract phone with fallbacks (now includes default_address)
+        # Priority 3: Extract phone with fallbacks
         phone = self._extract_phone(shipping_address, billing_address, customer, default_address)
         
-        # Priority 4: Extract city with fallbacks (now includes default_address)
+        # Priority 4: Extract city with fallbacks
         city = self._extract_city(shipping_address, billing_address, default_address)
         
-        # Priority 5: Extract province with fallbacks (now includes default_address)
+        # Priority 5: Extract province with fallbacks
         province = self._extract_province(shipping_address, billing_address, default_address)
         
         customer_data = {
@@ -99,16 +92,13 @@ class EHDMService:
             'phone': phone,
             'city': city,
             'province': province,
-            'email': customer.get('email', '')  # Add email for better identification
+            'email': customer.get('email', '')
         }
-        
-        print(f"Extracted Customer Data: {customer_data}")
-        print("=== END DEBUG ===")
         
         return customer_data
 
     def _extract_name(self, shipping_address, billing_address, customer, default_address):
-        """Extract customer name with fallbacks including default_address"""
+        """Extract customer name with fallbacks"""
         # Try shipping address first
         if shipping_address.get('first_name') or shipping_address.get('last_name'):
             first_name = shipping_address.get('first_name', '').strip()
@@ -137,16 +127,15 @@ class EHDMService:
             if first_name or last_name:
                 return f"{first_name} {last_name}".strip()
         
-        # Use email as last resort for identification
+        # Use email as last resort
         email = customer.get('email', '')
         if email:
-            return email.split('@')[0]  # Use part before @ as name
+            return email.split('@')[0]
         
-        # Final fallback
         return "Customer"
 
     def _extract_address(self, shipping_address, billing_address, default_address):
-        """Extract address with fallbacks including default_address"""
+        """Extract address with fallbacks"""
         # Try shipping address first
         if shipping_address.get('address1'):
             address1 = shipping_address.get('address1', '').strip()
@@ -171,11 +160,10 @@ class EHDMService:
             if address:
                 return address
         
-        # Final fallback
         return "Address Not Provided"
 
     def _extract_phone(self, shipping_address, billing_address, customer, default_address):
-        """Extract phone number with fallbacks including default_address"""
+        """Extract phone number with fallbacks"""
         # Try shipping address first
         if shipping_address.get('phone'):
             phone = shipping_address.get('phone', '').strip()
@@ -200,11 +188,10 @@ class EHDMService:
             if phone:
                 return phone
         
-        # Final fallback
         return "+374 00 000 000"
 
     def _extract_city(self, shipping_address, billing_address, default_address):
-        """Extract city with fallbacks including default_address"""
+        """Extract city with fallbacks"""
         # Try shipping address first
         if shipping_address.get('city'):
             city = shipping_address.get('city', '').strip()
@@ -223,11 +210,10 @@ class EHDMService:
             if city:
                 return city
         
-        # Final fallback
-        return "Yerevan"  # Most common city in Armenia
+        return "Yerevan"
 
     def _extract_province(self, shipping_address, billing_address, default_address):
-        """Extract province with fallbacks including default_address"""
+        """Extract province with fallbacks"""
         # Try shipping address first
         if shipping_address.get('province'):
             return shipping_address.get('province')
@@ -240,14 +226,13 @@ class EHDMService:
         if default_address.get('province'):
             return default_address.get('province')
         
-        # Final fallback - default to Yerevan
         return "Yerevan"
 
     def create_courier_order(self, shopify_order):
         """Create draft order with courier and get tracking number"""
         print("Creating courier order...")
 
-        # Extract customer data using priority-based fallback system
+        # Extract customer data
         customer_data = self.extract_customer_data(shopify_order)
         
         if not customer_data:
@@ -272,7 +257,7 @@ class EHDMService:
                 "price": 100
             })
 
-        # Construct the API payload with REAL customer data
+        # Construct the API payload
         courier_order_data = {
             "address_to": customer_data['address'][:100],
             "province_id": self.map_region_to_province(customer_data['province']),
@@ -291,11 +276,6 @@ class EHDMService:
             "label": 0
         }
 
-        # DEBUG: Print the actual payload being sent
-        print("=== DEBUG Courier Payload ===")
-        print(json.dumps(courier_order_data, indent=2))
-        print("=== END DEBUG ===")
-
         # Make API call to create draft order
         courier_url = f"{COURIER_BASE_URL}/api/create-draft-order"
         response = requests.post(courier_url, json=courier_order_data, headers=self.courier_headers)
@@ -307,10 +287,10 @@ class EHDMService:
                 courier_response = response.json()
                 # Try to extract real tracking number from response
                 tracking_number = (
-                    courier_response.get('order', {}).get('key') or  # Use the 'key' field as tracking number
+                    courier_response.get('order', {}).get('key') or
                     courier_response.get('order', {}).get('barcode_id') or
                     courier_response.get('order', {}).get('id') or
-                    str(shopify_order['id'])  # Fallback to Shopify ID
+                    str(shopify_order['id'])
                 )
                 print(f"✅ Real tracking number: {tracking_number}")
                 return tracking_number
@@ -338,7 +318,7 @@ class EHDMService:
                     # Create fulfillment with tracking
                     fulfillment_data = {
                         "fulfillment": {
-                            "location_id": 1,  # Add default location ID
+                            "location_id": 1,
                             "tracking_info": {
                                 "number": str(tracking_number),
                                 "company": "TransImpex Express",
@@ -356,27 +336,22 @@ class EHDMService:
                     fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
                     response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
 
-                    if response.status_code == 201 or response.status_code == 200:
+                    if response.status_code in [201, 200]:
                         print("✅ Shopify order updated with tracking successfully!")
                         return True
                     else:
                         print(f"❌ Shopify fulfillment failed: {response.status_code} - {response.text}")
-                        # Try alternative fulfillment method
                         return self._alternative_shopify_fulfillment(order_id, tracking_number, shopify_headers)
             else:
-                print(f"❌ Failed to get fulfillment orders: {fulfillment_response.status_code} - {fulfillment_response.text}")
-                # Try alternative fulfillment method
+                print(f"❌ Failed to get fulfillment orders: {fulfillment_response.status_code}")
                 return self._alternative_shopify_fulfillment(order_id, tracking_number, shopify_headers)
 
         except Exception as e:
             print(f"❌ Error updating Shopify tracking: {str(e)}")
-            # Try alternative fulfillment method
             return self._alternative_shopify_fulfillment(order_id, tracking_number, shopify_headers)
 
-        return False
-
     def _alternative_shopify_fulfillment(self, order_id, tracking_number, shopify_headers):
-        """Alternative method to update Shopify tracking if primary method fails"""
+        """Alternative method to update Shopify tracking"""
         print(f"🔄 Trying alternative Shopify fulfillment for order {order_id}")
         
         try:
@@ -405,23 +380,6 @@ class EHDMService:
             print(f"❌ Alternative Shopify fulfillment error: {str(e)}")
             return False
 
-    def notify_team(self, shopify_order, tracking_number):
-        """Notify about the new order"""
-        # Extract customer data for notification
-        customer_data = self.extract_customer_data(shopify_order)
-        
-        message = f"🚚 NEW SHIPPING ORDER\n"
-        message += f"Order #: {shopify_order.get('order_number')}\n"
-        message += f"Customer: {customer_data['name']}\n"
-        message += f"Email: {customer_data['email']}\n"
-        message += f"Tracking ID: {tracking_number}\n"
-        message += f"Address: {customer_data['address']}\n"
-        message += f"Phone: {customer_data['phone']}\n"
-        message += f"City: {customer_data['city']}"
-
-        print("📢 TEAM NOTIFICATION:")
-        print(message)
-
     def map_region_to_province(self, region_name):
         """Map Shopify regions to courier province IDs"""
         province_mapping = {
@@ -439,21 +397,17 @@ class CourierAutomation:
         }
 
     def check_and_process_confirmed_orders(self):
-        """Check all pending orders and process confirmed ones - AUTOMATIC VERSION"""
-        print("🔍 AUTOMATIC CHECK: Looking for confirmed orders...")
+        """Check all pending orders and process confirmed ones"""
+        print(f"🔍 AUTOMATIC CHECK: Checking {len(pending_orders)} pending orders...")
         
         if not pending_orders:
             print("📭 No pending orders to check")
             return
         
-        processed_orders = []
-        
-        for order_id in list(pending_orders):  # Create a copy to avoid modification during iteration
+        for order_id in list(pending_orders):
             try:
-                # Skip if already processed
-                if order_id in processed_orders:
-                    continue
-                    
+                print(f"🔍 Checking order {order_id}...")
+                
                 # Get order details from Shopify
                 order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
                 response = requests.get(order_url, headers=self.shopify_headers)
@@ -466,6 +420,7 @@ class CourierAutomation:
                 
                 # Check if order is confirmed
                 tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
+                print(f"🏷️ Order {order_id} tags: {tags}")
                 
                 if 'confirmed' in tags:
                     print(f"🎉 Order {order_id} is confirmed! AUTO-PROCESSING...")
@@ -474,7 +429,6 @@ class CourierAutomation:
                     if success:
                         pending_orders.remove(order_id)
                         processed_orders.add(order_id)
-                        processed_orders.append(order_id)
                         print(f"✅ AUTO-PROCESSED: Order {order_id}")
                     else:
                         print(f"❌ Auto-processing failed for order {order_id}")
@@ -483,15 +437,10 @@ class CourierAutomation:
                     
             except Exception as e:
                 print(f"❌ Error checking order {order_id}: {str(e)}")
-        
-        if processed_orders:
-            print(f"✅ AUTO-PROCESSING COMPLETE: Processed {len(processed_orders)} orders")
-        else:
-            print("📋 No new confirmed orders found")
-
+    
     def process_order_immediately(self, order_id):
         """Process order immediately"""
-        print(f"🚀 PROCESSING ORDER {order_id} IMMEDIATELY")
+        print(f"🚀 PROCESSING ORDER {order_id}")
         
         try:
             # Get order details from Shopify
@@ -518,12 +467,8 @@ class CourierAutomation:
             # Process with EHDM service
             ehdm_service = EHDMService()
             
-            # Generate fiscal receipt with PayX first
-            if ehdm_service.login():
-                print("✅ PayX login successful, ready for receipt generation")
-                # TODO: Add receipt generation logic here
-            else:
-                print("❌ PayX login failed, but continuing with shipping")
+            # Try to login to PayX (optional)
+            ehdm_service.login()
             
             # Create order with courier
             tracking_number = ehdm_service.create_courier_order(shopify_order)
@@ -533,8 +478,6 @@ class CourierAutomation:
                 success = ehdm_service.update_shopify_tracking(order_id, tracking_number, self.shopify_headers)
 
                 if success:
-                    # Notify courier team
-                    ehdm_service.notify_team(shopify_order, tracking_number)
                     print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
                     return True
                 else:
@@ -546,8 +489,6 @@ class CourierAutomation:
                 
         except Exception as e:
             print(f"💥 ERROR processing order {order_id}: {str(e)}")
-            import traceback
-            print(f"📋 Stack trace: {traceback.format_exc()}")
             return False
 
 def generate_webhook_id(webhook_data):
@@ -568,7 +509,7 @@ def background_order_checker():
         
         # Wait 2 minutes before next check
         print("⏰ Next automatic check in 2 minutes...")
-        time.sleep(120)  # 2 minutes
+        time.sleep(120)
 
 @app.route('/webhook/order-paid', methods=['POST'])
 def handle_order_paid():
@@ -580,7 +521,7 @@ def handle_order_paid():
         order_id = shopify_order['id']
         order_number = shopify_order.get('order_number', 'Unknown')
 
-        # Webhook idempotency - prevent duplicate processing
+        # Webhook idempotency
         webhook_id = generate_webhook_id(shopify_order)
         if webhook_id in processed_webhooks:
             print(f"🔄 Duplicate webhook detected for order {order_number}, skipping")
@@ -606,7 +547,7 @@ def handle_order_paid():
             # Add to pending orders for automatic processing
             pending_orders.add(order_id)
             print(f"✅ Order {order_number} added to pending orders (total: {len(pending_orders)})")
-            print(f"🎯 SYSTEM WILL AUTO-PROCESS when 'confirmed' tag is added (checks every 2 minutes)")
+            print(f"🎯 SYSTEM WILL AUTO-PROCESS when 'confirmed' tag is added")
             
             return jsonify({
                 "success": True,
@@ -625,7 +566,7 @@ def handle_order_paid():
 
 @app.route('/process-order/<order_id>', methods=['POST'])
 def process_order_manual(order_id):
-    """Manual endpoint to process an order immediately (optional)"""
+    """Manual endpoint to process an order immediately"""
     print(f"🔄 Manual order processing requested for {order_id}")
     
     try:
@@ -661,27 +602,17 @@ def health_check():
 def home():
     return """
     🚚 FULLY AUTOMATIC Shipping Automation Server is Running!<br><br>
-    <strong>SYSTEM STATUS: AUTOMATIC</strong><br>
-    - ✅ Webhook auto-tags orders as 'pending-confirmation'<br>
-    - ✅ System checks for 'confirmed' tags every 2 minutes<br>
-    - ✅ Auto-processes confirmed orders without manual intervention<br><br>
-    
     <strong>Endpoints:</strong><br>
-    - POST /webhook/order-paid (Shopify webhook)<br>
-    - GET /pending-orders (view pending orders)<br>
-    - GET /health (health check)<br><br>
-    
-    <strong>Workflow:</strong><br>
-    1. Customer pays → webhook auto-tags 'pending-confirmation'<br>
-    2. You add 'confirmed' tag in Shopify<br>
-    3. <strong>SYSTEM AUTO-PROCESSES within 2 minutes</strong><br>
-    4. Courier order created + tracking updated automatically<br>
+    - POST /webhook/order-paid<br>
+    - POST /process-order/&lt;order_id&gt;<br>
+    - GET /pending-orders<br>
+    - GET /health<br>
     """
 
 # Start the automatic background checker when app starts
 print("🚀 Starting FULLY AUTOMATIC Shipping Automation Server...")
 checker_thread = threading.Thread(target=background_order_checker)
-checker_thread.daemon = True  # Daemon thread will be killed when main thread exits
+checker_thread.daemon = True
 checker_thread.start()
 print("✅ AUTOMATIC ORDER CHECKER STARTED - Checking every 2 minutes")
 
