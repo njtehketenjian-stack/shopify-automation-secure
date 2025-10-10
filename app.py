@@ -4,7 +4,6 @@ import json
 import os
 import time
 import hashlib
-import threading
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -20,11 +19,11 @@ EHDM_PASSWORD = os.getenv('EHDM_PASSWORD')
 
 app = Flask(__name__)
 
-# Simple in-memory stores
+# Global in-memory store for webhook idempotency
 processed_webhooks = {}
-pending_orders = set()
+processed_orders = {}
 
-print("🚀 Starting Shipping Automation Server...")
+print("🚀 Starting Shopify Automation Server...")
 
 class EHDMService:
     def __init__(self):
@@ -65,96 +64,184 @@ class EHDMService:
 
     def extract_customer_data(self, shopify_order):
         """
-        COMPLETE customer data extraction from FULL Shopify order data
-        Uses multiple fallback sources to get real customer information
+        Extract customer data using priority-based fallback system
         """
         shipping_address = shopify_order.get('shipping_address', {})
         billing_address = shopify_order.get('billing_address', {})
         customer = shopify_order.get('customer', {})
+        default_address = customer.get('default_address', {})
         
-        print("=== DEBUG: Customer Data Extraction ===")
-        print(f"Shipping keys: {list(shipping_address.keys())}")
-        print(f"Billing keys: {list(billing_address.keys())}")
-        print(f"Customer keys: {list(customer.keys())}")
+        print("=== DEBUG Customer Data Extraction ===")
+        print(f"Shipping Address: {shipping_address}")
+        print(f"Billing Address: {billing_address}")
+        print(f"Customer Object: {list(customer.keys()) if customer else 'No customer'}")
+        print(f"Default Address: {default_address}")
         
-        # 1. EXTRACT NAME - Priority: shipping > billing > customer
-        name = "Customer"
-        if shipping_address.get('first_name') or shipping_address.get('last_name'):
-            first_name = shipping_address.get('first_name', '').strip()
-            last_name = shipping_address.get('last_name', '').strip()
-            name = f"{first_name} {last_name}".strip()
-            print(f"✅ Name from SHIPPING: {name}")
-        elif billing_address.get('first_name') or billing_address.get('last_name'):
-            first_name = billing_address.get('first_name', '').strip()
-            last_name = billing_address.get('last_name', '').strip()
-            name = f"{first_name} {last_name}".strip()
-            print(f"✅ Name from BILLING: {name}")
-        elif customer.get('first_name') or customer.get('last_name'):
-            first_name = customer.get('first_name', '').strip()
-            last_name = customer.get('last_name', '').strip()
-            name = f"{first_name} {last_name}".strip()
-            print(f"✅ Name from CUSTOMER: {name}")
-        else:
-            print("⚠️  Using default name: Customer")
-
-        # 2. EXTRACT ADDRESS - Priority: shipping > billing
-        address = "Address Not Provided"
-        if shipping_address.get('address1'):
-            address1 = shipping_address.get('address1', '').strip()
-            address2 = shipping_address.get('address2', '').strip()
-            address = f"{address1} {address2}".strip()
-            print(f"✅ Address from SHIPPING: {address}")
-        elif billing_address.get('address1'):
-            address1 = billing_address.get('address1', '').strip()
-            address2 = billing_address.get('address2', '').strip()
-            address = f"{address1} {address2}".strip()
-            print(f"✅ Address from BILLING: {address}")
-        else:
-            print("⚠️  Using default address: Address Not Provided")
-
-        # 3. EXTRACT PHONE - Priority: shipping > billing > customer
-        phone = "+374 00 000 000"
-        if shipping_address.get('phone'):
-            phone = shipping_address.get('phone', '').strip()
-            print(f"✅ Phone from SHIPPING: {phone}")
-        elif billing_address.get('phone'):
-            phone = billing_address.get('phone', '').strip()
-            print(f"✅ Phone from BILLING: {phone}")
-        elif customer.get('phone'):
-            phone = customer.get('phone', '').strip()
-            print(f"✅ Phone from CUSTOMER: {phone}")
-        else:
-            print("⚠️  Using default phone: +374 00 000 000")
-
-        # 4. EXTRACT CITY - Priority: shipping > billing
-        city = "Yerevan"
-        if shipping_address.get('city'):
-            city = shipping_address.get('city', '').strip()
-            print(f"✅ City from SHIPPING: {city}")
-        elif billing_address.get('city'):
-            city = billing_address.get('city', '').strip()
-            print(f"✅ City from BILLING: {city}")
-        else:
-            print("⚠️  Using default city: Yerevan")
-
+        # Priority 1: Extract name with fallbacks
+        name = self._extract_name(shipping_address, billing_address, customer, default_address)
+        
+        # Priority 2: Extract address with fallbacks
+        address = self._extract_address(shipping_address, billing_address, default_address)
+        
+        # Priority 3: Extract phone with fallbacks
+        phone = self._extract_phone(shipping_address, billing_address, customer, default_address)
+        
+        # Priority 4: Extract city with fallbacks
+        city = self._extract_city(shipping_address, billing_address, default_address)
+        
+        # Priority 5: Extract province with fallbacks
+        province = self._extract_province(shipping_address, billing_address, default_address)
+        
         customer_data = {
             'name': name,
             'address': address,
             'phone': phone,
             'city': city,
+            'province': province,
             'email': customer.get('email', '')
         }
         
-        print(f"🎯 FINAL Customer Data: {customer_data}")
+        print(f"🎯 Extracted Customer Data: {customer_data}")
         print("=== END DEBUG ===")
         
         return customer_data
 
+    def _extract_name(self, shipping_address, billing_address, customer, default_address):
+        """Extract customer name with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('first_name') or shipping_address.get('last_name'):
+            first_name = shipping_address.get('first_name', '').strip()
+            last_name = shipping_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Try billing address
+        if billing_address.get('first_name') or billing_address.get('last_name'):
+            first_name = billing_address.get('first_name', '').strip()
+            last_name = billing_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Try default address
+        if default_address.get('first_name') or default_address.get('last_name'):
+            first_name = default_address.get('first_name', '').strip()
+            last_name = default_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Try customer object
+        if customer.get('first_name') or customer.get('last_name'):
+            first_name = customer.get('first_name', '').strip()
+            last_name = customer.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Use email as last resort
+        email = customer.get('email', '')
+        if email:
+            return email.split('@')[0]
+        
+        return "Customer"
+
+    def _extract_address(self, shipping_address, billing_address, default_address):
+        """Extract address with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('address1'):
+            address1 = shipping_address.get('address1', '').strip()
+            address2 = shipping_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        # Try billing address
+        if billing_address.get('address1'):
+            address1 = billing_address.get('address1', '').strip()
+            address2 = billing_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        # Try default address
+        if default_address.get('address1'):
+            address1 = default_address.get('address1', '').strip()
+            address2 = default_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        return "Address Not Provided"
+
+    def _extract_phone(self, shipping_address, billing_address, customer, default_address):
+        """Extract phone number with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('phone'):
+            phone = shipping_address.get('phone', '').strip()
+            if phone:
+                return phone
+        
+        # Try billing address
+        if billing_address.get('phone'):
+            phone = billing_address.get('phone', '').strip()
+            if phone:
+                return phone
+        
+        # Try default address
+        if default_address.get('phone'):
+            phone = default_address.get('phone', '').strip()
+            if phone:
+                return phone
+        
+        # Try customer object
+        if customer.get('phone'):
+            phone = customer.get('phone', '').strip()
+            if phone:
+                return phone
+        
+        return "+374 00 000 000"
+
+    def _extract_city(self, shipping_address, billing_address, default_address):
+        """Extract city with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('city'):
+            city = shipping_address.get('city', '').strip()
+            if city:
+                return city
+        
+        # Try billing address
+        if billing_address.get('city'):
+            city = billing_address.get('city', '').strip()
+            if city:
+                return city
+        
+        # Try default address
+        if default_address.get('city'):
+            city = default_address.get('city', '').strip()
+            if city:
+                return city
+        
+        return "Yerevan"
+
+    def _extract_province(self, shipping_address, billing_address, default_address):
+        """Extract province with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('province'):
+            return shipping_address.get('province')
+        
+        # Try billing address
+        if billing_address.get('province'):
+            return billing_address.get('province')
+        
+        # Try default address
+        if default_address.get('province'):
+            return default_address.get('province')
+        
+        return "Yerevan"
+
     def create_courier_order(self, shopify_order):
         """Create draft order with courier using REAL customer data"""
-        print("🔄 Creating courier order with REAL customer data...")
+        print("🔄 Creating courier order...")
 
-        # Extract COMPLETE customer data
+        # Extract customer data using priority-based fallback system
         customer_data = self.extract_customer_data(shopify_order)
         
         if not customer_data:
@@ -182,7 +269,7 @@ class EHDMService:
         # Construct the API payload with REAL customer data
         courier_order_data = {
             "address_to": customer_data['address'][:100],
-            "province_id": 11,  # Default to Yerevan
+            "province_id": self.map_region_to_province(customer_data['province']),
             "city": customer_data['city'][:50],
             "package_type": "Parcel",
             "parcel_weight": "1.0",
@@ -199,7 +286,7 @@ class EHDMService:
         }
 
         # DEBUG: Print the actual payload being sent
-        print("=== DEBUG: Courier Payload ===")
+        print("=== DEBUG Courier Payload ===")
         print(json.dumps(courier_order_data, indent=2))
         print("=== END DEBUG ===")
 
@@ -214,10 +301,10 @@ class EHDMService:
                 courier_response = response.json()
                 # Try to extract real tracking number from response
                 tracking_number = (
-                    courier_response.get('order', {}).get('key') or  # Use the 'key' field as tracking number
+                    courier_response.get('order', {}).get('key') or
                     courier_response.get('order', {}).get('barcode_id') or
                     courier_response.get('order', {}).get('id') or
-                    str(shopify_order['id'])  # Fallback to Shopify ID
+                    str(shopify_order['id'])
                 )
                 print(f"✅ Real tracking number: {tracking_number}")
                 return tracking_number
@@ -258,61 +345,21 @@ class EHDMService:
             print(f"❌ Error updating Shopify tracking: {str(e)}")
             return False
 
+    def map_region_to_province(self, region_name):
+        """Map Shopify regions to courier province IDs"""
+        province_mapping = {
+            'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
+            'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
+            'Vayots Dzor': 10, 'Yerevan': 11
+        }
+        return province_mapping.get(region_name, 11)
+
 class CourierAutomation:
     def __init__(self):
         self.shopify_headers = {
             'Content-Type': 'application/json',
             'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN
         }
-
-    def check_and_process_confirmed_orders(self):
-        """Check all pending orders and process confirmed ones"""
-        print(f"🔍 Checking {len(pending_orders)} pending orders for confirmation...")
-        
-        if not pending_orders:
-            print("📭 No pending orders to check")
-            return
-        
-        processed_count = 0
-        
-        for order_id in list(pending_orders):
-            try:
-                print(f"🔍 Checking order {order_id}...")
-                
-                # Get COMPLETE order details from Shopify API (not webhook data)
-                order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-                response = requests.get(order_url, headers=self.shopify_headers)
-
-                if response.status_code != 200:
-                    print(f"❌ Failed to fetch order {order_id}: {response.status_code}")
-                    continue
-
-                shopify_order = response.json().get('order', {})
-                
-                # Check if order is confirmed
-                tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
-                print(f"🏷️ Order {order_id} tags: {tags}")
-                
-                if 'confirmed' in tags:
-                    print(f"🎉 Order {order_id} is confirmed! Processing...")
-                    success = self.process_order_immediately(order_id)
-                    
-                    if success:
-                        pending_orders.remove(order_id)
-                        processed_count += 1
-                        print(f"✅ Successfully processed order {order_id}")
-                    else:
-                        print(f"❌ Failed to process order {order_id}")
-                else:
-                    print(f"⏳ Order {order_id} still pending confirmation")
-                    
-            except Exception as e:
-                print(f"❌ Error checking order {order_id}: {str(e)}")
-        
-        if processed_count > 0:
-            print(f"🎊 Processed {processed_count} confirmed orders!")
-        else:
-            print("📋 No confirmed orders found")
 
     def process_order_immediately(self, order_id):
         """Process order immediately with PayX and Courier"""
@@ -376,21 +423,6 @@ def generate_webhook_id(webhook_data):
     webhook_str = json.dumps(webhook_data, sort_keys=True)
     return hashlib.md5(webhook_str.encode()).hexdigest()
 
-def background_order_checker():
-    """Simple background thread that checks for confirmed orders every 5 minutes"""
-    print("🔄 Starting automatic order checker (5-minute intervals)...")
-    
-    while True:
-        try:
-            automation = CourierAutomation()
-            automation.check_and_process_confirmed_orders()
-        except Exception as e:
-            print(f"❌ Background checker error: {str(e)}")
-        
-        # Wait 5 minutes before next check
-        print("⏰ Next automatic check in 5 minutes...")
-        time.sleep(300)  # 5 minutes
-
 @app.route('/webhook/order-paid', methods=['POST'])
 def handle_order_paid():
     """Webhook endpoint that Shopify calls when order is paid"""
@@ -424,14 +456,12 @@ def handle_order_paid():
         response = requests.put(update_url, json=update_data, headers=automation.shopify_headers)
 
         if response.status_code == 200:
-            # Add to pending orders for automatic processing
-            pending_orders.add(order_id)
-            print(f"✅ Order {order_number} added to pending orders (total: {len(pending_orders)})")
-            print(f"🎯 System will auto-process when 'confirmed' tag is added (checks every 5 minutes)")
+            print(f"✅ Order {order_number} tagged as 'pending-confirmation'")
+            print(f"💡 Add 'confirmed' tag in Shopify to automatically process")
             
             return jsonify({
                 "success": True,
-                "message": "Order saved. System auto-processes when 'confirmed' tag is added."
+                "message": "Order saved. Add 'confirmed' tag to automatically process."
             }), 200
         else:
             print(f"❌ Failed to update order tags: {response.text}")
@@ -444,32 +474,76 @@ def handle_order_paid():
         print(f"❌ Error processing webhook: {str(e)}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-@app.route('/process-confirmed', methods=['POST'])
-def process_confirmed_orders():
-    """Manual endpoint to process all confirmed orders immediately"""
-    print("🔄 Manual processing of confirmed orders requested")
+@app.route('/webhook/order-updated', methods=['POST'])
+def handle_order_updated():
+    """Webhook endpoint that Shopify calls when order is updated (tags changed)"""
+    print("🔄 Received order updated webhook")
+
+    try:
+        shopify_order = request.json
+        order_id = shopify_order['id']
+        order_number = shopify_order.get('order_number', 'Unknown')
+
+        # Webhook idempotency
+        webhook_id = generate_webhook_id(shopify_order)
+        if webhook_id in processed_webhooks:
+            print(f"🔄 Duplicate webhook detected for order {order_number}, skipping")
+            return jsonify({"success": True, "message": "Webhook already processed"}), 200
+        
+        processed_webhooks[webhook_id] = True
+
+        print(f"🔄 Order #{order_number} updated, checking tags...")
+
+        # Check if order has "confirmed" tag
+        tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
+        print(f"🏷️ Current tags: {tags}")
+
+        if 'confirmed' in tags:
+            print(f"🎉 Order {order_number} has 'confirmed' tag! Processing immediately...")
+            
+            automation = CourierAutomation()
+            success = automation.process_order_immediately(order_id)
+            
+            if success:
+                print(f"✅ Order {order_number} processed successfully via order-updated webhook")
+                return jsonify({
+                    "success": True,
+                    "message": f"Order {order_number} processed successfully"
+                }), 200
+            else:
+                print(f"❌ Failed to process order {order_number}")
+                return jsonify({
+                    "success": False,
+                    "message": f"Failed to process order {order_number}"
+                }), 500
+        else:
+            print(f"⏳ Order {order_number} doesn't have 'confirmed' tag, skipping")
+            return jsonify({
+                "success": True,
+                "message": "Order doesn't have 'confirmed' tag, skipping"
+            }), 200
+
+    except Exception as e:
+        print(f"❌ Error processing order updated webhook: {str(e)}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/process-order/<order_id>', methods=['POST'])
+def process_order_manual(order_id):
+    """Manual endpoint to process an order immediately"""
+    print(f"🔄 Manual order processing requested for {order_id}")
     
     try:
         automation = CourierAutomation()
-        automation.check_and_process_confirmed_orders()
+        success = automation.process_order_immediately(order_id)
         
-        return jsonify({
-            "success": True, 
-            "message": f"Processed confirmed orders. {len(pending_orders)} orders still pending."
-        }), 200
-        
+        if success:
+            return jsonify({"success": True, "message": f"Order {order_id} processed successfully"}), 200
+        else:
+            return jsonify({"success": False, "message": f"Failed to process order {order_id}"}), 500
+            
     except Exception as e:
-        print(f"❌ Error processing confirmed orders: {str(e)}")
+        print(f"❌ Error in manual order processing: {str(e)}")
         return jsonify({"success": False, "message": str(e)}), 500
-
-@app.route('/pending-orders', methods=['GET'])
-def get_pending_orders():
-    """Get list of pending orders"""
-    return jsonify({
-        "success": True,
-        "pending_orders": list(pending_orders),
-        "count": len(pending_orders)
-    }), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -481,42 +555,19 @@ def home():
     🚚 AUTOMATIC Shipping Automation Server<br><br>
     <strong>SYSTEM STATUS: ACTIVE</strong><br>
     - ✅ Webhook auto-tags orders as 'pending-confirmation'<br>
-    - ✅ System checks for 'confirmed' tags every 5 minutes<br>
+    - ✅ Order-updated webhook detects 'confirmed' tags immediately<br>
     - ✅ Auto-processes confirmed orders with REAL customer data<br><br>
+    
+    <strong>Setup Required:</strong><br>
+    1. Add Shopify webhook: orders/updated → /webhook/order-updated<br>
+    2. Add 'confirmed' tag in Shopify to auto-process orders<br><br>
     
     <strong>Endpoints:</strong><br>
     - POST /webhook/order-paid (Shopify webhook)<br>
-    - POST /process-confirmed (manual trigger)<br>
-    - GET /pending-orders (view pending orders)<br>
+    - POST /webhook/order-updated (Shopify webhook)<br>
+    - POST /process-order/&lt;order_id&gt; (manual trigger)<br>
     - GET /health (health check)<br>
     """
-
-# Start the automatic background checker when app starts
-print("✅ Starting automatic order checker...")
-checker_thread = threading.Thread(target=background_order_checker)
-checker_thread.daemon = True  # Daemon thread will be killed when main thread exits
-checker_thread.start()
-
-def keep_alive():
-    """Background thread to ping app every 10 minutes to prevent Render sleep"""
-    def ping():
-        import requests
-        while True:
-            try:
-                # Ping our own health endpoint
-                requests.get("https://shopify-automation-secure.onrender.com/health", timeout=5)
-                print("🔄 Keep-alive ping sent")
-            except Exception as e:
-                print(f"⚠️ Keep-alive ping failed: {e}")
-            time.sleep(600)  # Wait 10 minutes
-    
-    thread = threading.Thread(target=ping)
-    thread.daemon = True
-    thread.start()
-    print("✅ Keep-alive service started")
-
-# Start keep-alive when app loads
-keep_alive()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
