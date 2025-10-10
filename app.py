@@ -4,6 +4,7 @@ import json
 import os
 import time
 import hashlib
+import threading
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -22,6 +23,7 @@ app = Flask(__name__)
 # Simple in-memory stores
 processed_webhooks = {}
 pending_orders = set()
+processed_orders = set()  # Track processed orders to avoid duplicates
 
 class EHDMService:
     def __init__(self):
@@ -437,8 +439,8 @@ class CourierAutomation:
         }
 
     def check_and_process_confirmed_orders(self):
-        """Check all pending orders and process confirmed ones"""
-        print("🔍 Checking for confirmed orders...")
+        """Check all pending orders and process confirmed ones - AUTOMATIC VERSION"""
+        print("🔍 AUTOMATIC CHECK: Looking for confirmed orders...")
         
         if not pending_orders:
             print("📭 No pending orders to check")
@@ -448,6 +450,10 @@ class CourierAutomation:
         
         for order_id in list(pending_orders):  # Create a copy to avoid modification during iteration
             try:
+                # Skip if already processed
+                if order_id in processed_orders:
+                    continue
+                    
                 # Get order details from Shopify
                 order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
                 response = requests.get(order_url, headers=self.shopify_headers)
@@ -462,12 +468,16 @@ class CourierAutomation:
                 tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
                 
                 if 'confirmed' in tags:
-                    print(f"🎉 Order {order_id} is confirmed! Processing...")
+                    print(f"🎉 Order {order_id} is confirmed! AUTO-PROCESSING...")
                     success = self.process_order_immediately(order_id)
                     
                     if success:
                         pending_orders.remove(order_id)
+                        processed_orders.add(order_id)
                         processed_orders.append(order_id)
+                        print(f"✅ AUTO-PROCESSED: Order {order_id}")
+                    else:
+                        print(f"❌ Auto-processing failed for order {order_id}")
                 else:
                     print(f"⏳ Order {order_id} still pending confirmation")
                     
@@ -475,7 +485,7 @@ class CourierAutomation:
                 print(f"❌ Error checking order {order_id}: {str(e)}")
         
         if processed_orders:
-            print(f"✅ Processed {len(processed_orders)} orders: {processed_orders}")
+            print(f"✅ AUTO-PROCESSING COMPLETE: Processed {len(processed_orders)} orders")
         else:
             print("📋 No new confirmed orders found")
 
@@ -545,6 +555,21 @@ def generate_webhook_id(webhook_data):
     webhook_str = json.dumps(webhook_data, sort_keys=True)
     return hashlib.md5(webhook_str.encode()).hexdigest()
 
+def background_order_checker():
+    """Background thread that automatically checks for confirmed orders every 2 minutes"""
+    print("🔄 STARTING AUTOMATIC ORDER CHECKER - Checking every 2 minutes")
+    
+    while True:
+        try:
+            automation = CourierAutomation()
+            automation.check_and_process_confirmed_orders()
+        except Exception as e:
+            print(f"❌ Background checker error: {str(e)}")
+        
+        # Wait 2 minutes before next check
+        print("⏰ Next automatic check in 2 minutes...")
+        time.sleep(120)  # 2 minutes
+
 @app.route('/webhook/order-paid', methods=['POST'])
 def handle_order_paid():
     """Webhook endpoint that Shopify calls when order is paid"""
@@ -581,11 +606,11 @@ def handle_order_paid():
             # Add to pending orders for automatic processing
             pending_orders.add(order_id)
             print(f"✅ Order {order_number} added to pending orders (total: {len(pending_orders)})")
-            print(f"💡 Add 'confirmed' tag in Shopify, then call /process-confirmed to auto-process all confirmed orders")
+            print(f"🎯 SYSTEM WILL AUTO-PROCESS when 'confirmed' tag is added (checks every 2 minutes)")
             
             return jsonify({
                 "success": True,
-                "message": "Order saved pending confirmation. Add 'confirmed' tag, then call /process-confirmed"
+                "message": "Order saved. System auto-processes when 'confirmed' tag is added."
             }), 200
         else:
             print(f"❌ Failed to update order tags: {response.text}")
@@ -598,27 +623,9 @@ def handle_order_paid():
         print(f"❌ Error processing webhook: {str(e)}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-@app.route('/process-confirmed', methods=['POST'])
-def process_confirmed_orders():
-    """Process all confirmed orders at once"""
-    print("🔄 Processing all confirmed orders...")
-    
-    try:
-        automation = CourierAutomation()
-        automation.check_and_process_confirmed_orders()
-        
-        return jsonify({
-            "success": True, 
-            "message": f"Processed confirmed orders. {len(pending_orders)} orders still pending."
-        }), 200
-        
-    except Exception as e:
-        print(f"❌ Error processing confirmed orders: {str(e)}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
 @app.route('/process-order/<order_id>', methods=['POST'])
 def process_order_manual(order_id):
-    """Manual endpoint to process an order immediately"""
+    """Manual endpoint to process an order immediately (optional)"""
     print(f"🔄 Manual order processing requested for {order_id}")
     
     try:
@@ -653,20 +660,32 @@ def health_check():
 @app.route('/')
 def home():
     return """
-    🚚 Shipping Automation Server is Running!<br><br>
+    🚚 FULLY AUTOMATIC Shipping Automation Server is Running!<br><br>
+    <strong>SYSTEM STATUS: AUTOMATIC</strong><br>
+    - ✅ Webhook auto-tags orders as 'pending-confirmation'<br>
+    - ✅ System checks for 'confirmed' tags every 2 minutes<br>
+    - ✅ Auto-processes confirmed orders without manual intervention<br><br>
+    
     <strong>Endpoints:</strong><br>
-    - POST /webhook/order-paid (auto-adds pending-confirmation tag)<br>
-    - POST /process-confirmed (processes ALL confirmed orders)<br>
-    - POST /process-order/&lt;order_id&gt; (process specific order)<br>
+    - POST /webhook/order-paid (Shopify webhook)<br>
     - GET /pending-orders (view pending orders)<br>
-    - GET /health<br><br>
+    - GET /health (health check)<br><br>
+    
     <strong>Workflow:</strong><br>
-    1. Webhook auto-tags orders as 'pending-confirmation'<br>
-    2. Add 'confirmed' tag in Shopify<br>
-    3. Call POST /process-confirmed to process all confirmed orders<br>
+    1. Customer pays → webhook auto-tags 'pending-confirmation'<br>
+    2. You add 'confirmed' tag in Shopify<br>
+    3. <strong>SYSTEM AUTO-PROCESSES within 2 minutes</strong><br>
+    4. Courier order created + tracking updated automatically<br>
     """
+
+# Start the automatic background checker when app starts
+print("🚀 Starting FULLY AUTOMATIC Shipping Automation Server...")
+checker_thread = threading.Thread(target=background_order_checker)
+checker_thread.daemon = True  # Daemon thread will be killed when main thread exits
+checker_thread.start()
+print("✅ AUTOMATIC ORDER CHECKER STARTED - Checking every 2 minutes")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🚀 Starting Shipping Automation Server on port {port}...")
+    print(f"🌐 Server starting on port {port}...")
     app.run(host='0.0.0.0', port=port, debug=False)
