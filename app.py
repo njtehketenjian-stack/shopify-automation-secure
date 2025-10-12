@@ -62,193 +62,184 @@ class EHDMService:
         
         return False
 
-def extract_customer_data(self, shopify_order):
-    """
-    Extract customer data - ORDER DATA FIRST, customer data as fallback
-    """
-    # PRIMARY: Order-level shipping address (always contains checkout data)
-    shipping_address = shopify_order.get('shipping_address', {})
-    billing_address = shopify_order.get('billing_address', {})
-    
-    # SECONDARY: Customer object (fallback only)
-    customer = shopify_order.get('customer', {})
-    default_address = customer.get('default_address', {})
-    
-    print("=== DEBUG ORDER-BASED DATA EXTRACTION ===")
-    print(f"ORDER Shipping: {shipping_address}")
-    print(f"ORDER Billing: {billing_address}")
-    print(f"ORDER Email: {shopify_order.get('email')}")
-    print(f"ORDER Contact Email: {shopify_order.get('contact_email')}")
-    print(f"ORDER Phone: {shopify_order.get('phone')}")
-    
-    # PRIORITY 1: ORDER-LEVEL DATA (always use this first)
-    name = self._extract_name_from_order(shipping_address, billing_address, shopify_order)
-    address = self._extract_address_from_order(shipping_address, billing_address)
-    phone = shopify_order.get('phone') or self._extract_phone_from_order(shipping_address, billing_address)
-    email = shopify_order.get('email') or shopify_order.get('contact_email', '')
-    
-    # PRIORITY 2: Only use customer data as FALLBACK if order data is missing
-    if not name or name == "Customer":
-        name = self._extract_name_from_customer(customer, default_address)
-        print("🔄 Using customer fallback for name")
-    
-    if not address or address == "Address Not Provided":
-        address = self._extract_address_from_customer(default_address)
-        print("🔄 Using customer fallback for address")
-    
-    if not phone or phone == "+374 00 000 000":
-        phone = self._extract_phone_from_customer(customer, default_address)
-        print("🔄 Using customer fallback for phone")
-    
-    if not email:
-        email = customer.get('email', '')
-        print("🔄 Using customer fallback for email")
-    
-    customer_data = {
-        'name': name,
-        'address': address,
-        'phone': phone,
-        'city': self._extract_city(shipping_address, billing_address, default_address),
-        'province': self._extract_province(shipping_address, billing_address, default_address),
-        'email': email
-    }
-    
-    print(f"🎯 FINAL Customer Data: {customer_data}")
-    print("=== END DEBUG ===")
-    
-    return customer_data
+    def extract_customer_data(self, shopify_order):
+        """
+        Extract customer data - ORDER DATA FIRST, customer data as fallback
+        """
+        # PRIMARY: Order-level shipping address (always contains checkout data)
+        shipping_address = shopify_order.get('shipping_address', {})
+        billing_address = shopify_order.get('billing_address', {})
+        
+        # SECONDARY: Customer object (fallback only)
+        customer = shopify_order.get('customer', {})
+        default_address = customer.get('default_address', {})
+        
+        print("=== DEBUG ORDER-BASED DATA EXTRACTION ===")
+        print(f"ORDER Shipping: {shipping_address}")
+        print(f"ORDER Billing: {billing_address}")
+        print(f"ORDER Email: {shopify_order.get('email')}")
+        print(f"ORDER Contact Email: {shopify_order.get('contact_email')}")
+        print(f"ORDER Phone: {shopify_order.get('phone')}")
+        
+        # PRIORITY 1: ORDER-LEVEL DATA (always use this first)
+        name = self._extract_name_from_order(shipping_address, billing_address, shopify_order)
+        address = self._extract_address_from_order(shipping_address, billing_address)
+        phone = shopify_order.get('phone') or self._extract_phone_from_order(shipping_address, billing_address)
+        email = shopify_order.get('email') or shopify_order.get('contact_email', '')
+        
+        # PRIORITY 2: Only use customer data as FALLBACK if order data is missing
+        if not name or name == "Customer":
+            name = self._extract_name_from_customer(customer, default_address)
+            print("🔄 Using customer fallback for name")
+        
+        if not address or address == "Address Not Provided":
+            address = self._extract_address_from_customer(default_address)
+            print("🔄 Using customer fallback for address")
+        
+        if not phone or phone == "+374 00 000 000":
+            phone = self._extract_phone_from_customer(customer, default_address)
+            print("🔄 Using customer fallback for phone")
+        
+        if not email:
+            email = customer.get('email', '')
+            print("🔄 Using customer fallback for email")
+        
+        customer_data = {
+            'name': name,
+            'address': address,
+            'phone': phone,
+            'city': self._extract_city(shipping_address, billing_address, default_address),
+            'province': self._extract_province(shipping_address, billing_address, default_address),
+            'email': email
+        }
+        
+        print(f"🎯 FINAL Customer Data: {customer_data}")
+        print("=== END DEBUG ===")
+        
+        return customer_data
 
-def _extract_name_from_order(self, shipping_address, billing_address, order):
-    """Extract name from ORDER data first"""
-    # Try shipping address from order
-    if shipping_address.get('first_name') or shipping_address.get('last_name'):
-        first_name = shipping_address.get('first_name', '').strip()
-        last_name = shipping_address.get('last_name', '').strip()
-        if first_name or last_name:
-            return f"{first_name} {last_name}".strip()
-    
-    # Try billing address from order
-    if billing_address.get('first_name') or billing_address.get('last_name'):
-        first_name = billing_address.get('first_name', '').strip()
-        last_name = billing_address.get('last_name', '').strip()
-        if first_name or last_name:
-            return f"{first_name} {last_name}".strip()
-    
-    return ""  # Empty string to trigger fallback
+    def _extract_name_from_order(self, shipping_address, billing_address, order):
+        """Extract name from ORDER data first"""
+        # Try shipping address from order
+        if shipping_address.get('first_name') or shipping_address.get('last_name'):
+            first_name = shipping_address.get('first_name', '').strip()
+            last_name = shipping_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        # Try billing address from order
+        if billing_address.get('first_name') or billing_address.get('last_name'):
+            first_name = billing_address.get('first_name', '').strip()
+            last_name = billing_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        return ""  # Empty string to trigger fallback
 
-def _extract_address_from_order(self, shipping_address, billing_address):
-    """Extract address from ORDER data first"""
-    # Try shipping address from order
-    if shipping_address.get('address1'):
-        address1 = shipping_address.get('address1', '').strip()
-        address2 = shipping_address.get('address2', '').strip()
-        address = f"{address1} {address2}".strip()
-        if address:
-            return address
-    
-    # Try billing address from order
-    if billing_address.get('address1'):
-        address1 = billing_address.get('address1', '').strip()
-        address2 = billing_address.get('address2', '').strip()
-        address = f"{address1} {address2}".strip()
-        if address:
-            return address
-    
-    return ""  # Empty string to trigger fallback
+    def _extract_address_from_order(self, shipping_address, billing_address):
+        """Extract address from ORDER data first"""
+        # Try shipping address from order
+        if shipping_address.get('address1'):
+            address1 = shipping_address.get('address1', '').strip()
+            address2 = shipping_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        # Try billing address from order
+        if billing_address.get('address1'):
+            address1 = billing_address.get('address1', '').strip()
+            address2 = billing_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        return ""  # Empty string to trigger fallback
 
-def _extract_phone_from_order(self, shipping_address, billing_address):
-    """Extract phone from ORDER data first"""
-    if shipping_address.get('phone'):
-        return shipping_address.get('phone', '').strip()
-    
-    if billing_address.get('phone'):
-        return billing_address.get('phone', '').strip()
-    
-    return ""  # Empty string to trigger fallback
+    def _extract_phone_from_order(self, shipping_address, billing_address):
+        """Extract phone from ORDER data first"""
+        if shipping_address.get('phone'):
+            return shipping_address.get('phone', '').strip()
+        
+        if billing_address.get('phone'):
+            return billing_address.get('phone', '').strip()
+        
+        return ""  # Empty string to trigger fallback
 
-def _extract_name_from_customer(self, customer, default_address):
-    """Extract name from customer data (fallback only)"""
-    if customer.get('first_name') or customer.get('last_name'):
-        first_name = customer.get('first_name', '').strip()
-        last_name = customer.get('last_name', '').strip()
-        if first_name or last_name:
-            return f"{first_name} {last_name}".strip()
-    
-    if default_address.get('first_name') or default_address.get('last_name'):
-        first_name = default_address.get('first_name', '').strip()
-        last_name = default_address.get('last_name', '').strip()
-        if first_name or last_name:
-            return f"{first_name} {last_name}".strip()
-    
-    return "Customer"
+    def _extract_name_from_customer(self, customer, default_address):
+        """Extract name from customer data (fallback only)"""
+        if customer.get('first_name') or customer.get('last_name'):
+            first_name = customer.get('first_name', '').strip()
+            last_name = customer.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        if default_address.get('first_name') or default_address.get('last_name'):
+            first_name = default_address.get('first_name', '').strip()
+            last_name = default_address.get('last_name', '').strip()
+            if first_name or last_name:
+                return f"{first_name} {last_name}".strip()
+        
+        return "Customer"
 
-def _extract_address_from_customer(self, default_address):
-    """Extract address from customer data (fallback only)"""
-    if default_address.get('address1'):
-        address1 = default_address.get('address1', '').strip()
-        address2 = default_address.get('address2', '').strip()
-        address = f"{address1} {address2}".strip()
-        if address:
-            return address
-    
-    return "Address Not Provided"
+    def _extract_address_from_customer(self, default_address):
+        """Extract address from customer data (fallback only)"""
+        if default_address.get('address1'):
+            address1 = default_address.get('address1', '').strip()
+            address2 = default_address.get('address2', '').strip()
+            address = f"{address1} {address2}".strip()
+            if address:
+                return address
+        
+        return "Address Not Provided"
 
-def _extract_phone_from_customer(self, customer, default_address):
-    """Extract phone from customer data (fallback only)"""
-    if customer.get('phone'):
-        return customer.get('phone', '').strip()
-    
-    if default_address.get('phone'):
-        return default_address.get('phone', '').strip()
-    
-    return "+374 00 000 000"
+    def _extract_phone_from_customer(self, customer, default_address):
+        """Extract phone from customer data (fallback only)"""
+        if customer.get('phone'):
+            return customer.get('phone', '').strip()
+        
+        if default_address.get('phone'):
+            return default_address.get('phone', '').strip()
+        
+        return "+374 00 000 000"
 
-def _extract_city(self, shipping_address, billing_address, default_address):
-    """Extract city with fallbacks"""
-    # Try shipping address first
-    if shipping_address.get('city'):
-        city = shipping_address.get('city', '').strip()
-        if city:
-            return city
-    
-    # Try billing address
-    if billing_address.get('city'):
-        city = billing_address.get('city', '').strip()
-        if city:
-            return city
-    
-    # Try default address
-    if default_address.get('city'):
-        city = default_address.get('city', '').strip()
-        if city:
-            return city
-    
-    return "Yerevan"
+    def _extract_city(self, shipping_address, billing_address, default_address):
+        """Extract city with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('city'):
+            city = shipping_address.get('city', '').strip()
+            if city:
+                return city
+        
+        # Try billing address
+        if billing_address.get('city'):
+            city = billing_address.get('city', '').strip()
+            if city:
+                return city
+        
+        # Try default address
+        if default_address.get('city'):
+            city = default_address.get('city', '').strip()
+            if city:
+                return city
+        
+        return "Yerevan"
 
-def _extract_province(self, shipping_address, billing_address, default_address):
-    """Extract province with fallbacks"""
-    # Try shipping address first
-    if shipping_address.get('province'):
-        return shipping_address.get('province')
-    
-    # Try billing address
-    if billing_address.get('province'):
-        return billing_address.get('province')
-    
-    # Try default address
-    if default_address.get('province'):
-        return default_address.get('province')
-    
-    return "Yerevan"
-
-def map_region_to_province(self, region_name):
-    """Map Shopify regions to courier province IDs"""
-    province_mapping = {
-        'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
-        'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
-        'Vayots Dzor': 10, 'Yerevan': 11
-    }
-    return province_mapping.get(region_name, 11)
+    def _extract_province(self, shipping_address, billing_address, default_address):
+        """Extract province with fallbacks"""
+        # Try shipping address first
+        if shipping_address.get('province'):
+            return shipping_address.get('province')
+        
+        # Try billing address
+        if billing_address.get('province'):
+            return billing_address.get('province')
+        
+        # Try default address
+        if default_address.get('province'):
+            return default_address.get('province')
+        
+        return "Yerevan"
 
     def create_courier_order(self, shopify_order, retry_count=0):
         """Create draft order with courier using REAL customer data"""
@@ -343,144 +334,153 @@ def map_region_to_province(self, region_name):
             print(f"❌ Courier API Error: {response.status_code} - {response.text}")
             return None
 
-def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
-    """Add tracking number to Shopify order - MULTI-APPROACH"""
-    print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
+    def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
+        """Add tracking number to Shopify order - MULTI-APPROACH"""
+        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
 
-    # APPROACH 1: Try FulfillmentOrder API (modern approach)
-    try:
-        fulfillment_orders_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
-        fulfillment_response = requests.get(fulfillment_orders_url, headers=shopify_headers)
-        
-        if fulfillment_response.status_code == 200:
-            fulfillment_orders = fulfillment_response.json().get('fulfillment_orders', [])
+        # APPROACH 1: Try FulfillmentOrder API (modern approach)
+        try:
+            fulfillment_orders_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
+            fulfillment_response = requests.get(fulfillment_orders_url, headers=shopify_headers)
             
-            if fulfillment_orders:
-                print("✅ Fulfillment orders found, using modern API")
-                for fulfillment_order in fulfillment_orders:
-                    fulfillment_order_id = fulfillment_order['id']
-                    line_items = []
-                    
-                    for line_item in fulfillment_order['line_items']:
-                        line_items.append({
-                            "id": line_item['id'],
-                            "quantity": line_item['fulfillable_quantity']
-                        })
-                    
-                    fulfillment_data = {
+            if fulfillment_response.status_code == 200:
+                fulfillment_orders = fulfillment_response.json().get('fulfillment_orders', [])
+                
+                if fulfillment_orders:
+                    print("✅ Fulfillment orders found, using modern API")
+                    for fulfillment_order in fulfillment_orders:
+                        fulfillment_order_id = fulfillment_order['id']
+                        line_items = []
+                        
+                        for line_item in fulfillment_order['line_items']:
+                            line_items.append({
+                                "id": line_item['id'],
+                                "quantity": line_item['fulfillable_quantity']
+                            })
+                        
+                        fulfillment_data = {
+                            "fulfillment": {
+                                "line_items_by_fulfillment_order": [
+                                    {
+                                        "fulfillment_order_id": fulfillment_order_id,
+                                        "fulfillment_order_line_items": line_items
+                                    }
+                                ],
+                                "tracking_info": {
+                                    "number": str(tracking_number),
+                                    "company": "TransImpex Express",
+                                    "url": f"https://transimpexexpress.am/tracking/{tracking_number}"
+                                },
+                                "notify_customer": True
+                            }
+                        }
+
+                        fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
+                        response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+                        if response.status_code in [201, 200]:
+                            print("✅ Fulfillment created successfully!")
+                            self._mark_order_processed(order_id, shopify_headers)
+                            return True
+                        else:
+                            print(f"❌ Fulfillment failed: {response.status_code}")
+        except Exception as e:
+            print(f"⚠️ FulfillmentOrder API failed: {str(e)}")
+
+        # APPROACH 2: Simple fulfillment (fallback)
+        print("🔄 Trying simple fulfillment approach...")
+        try:
+            fulfillment_data = {
+                "fulfillment": {
+                    "tracking_number": str(tracking_number),
+                    "tracking_company": "TransImpex Express",
+                    "notify_customer": False
+                }
+            }
+
+            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
+            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+            if response.status_code in [201, 200]:
+                print("✅ Simple fulfillment created successfully!")
+                
+                # Try to add tracking URL
+                fulfillment_id = response.json().get('fulfillment', {}).get('id')
+                if fulfillment_id:
+                    update_data = {
                         "fulfillment": {
-                            "line_items_by_fulfillment_order": [
-                                {
-                                    "fulfillment_order_id": fulfillment_order_id,
-                                    "fulfillment_order_line_items": line_items
-                                }
-                            ],
-                            "tracking_info": {
-                                "number": str(tracking_number),
-                                "company": "TransImpex Express",
-                                "url": f"https://transimpexexpress.am/tracking/{tracking_number}"
-                            },
+                            "id": fulfillment_id,
+                            "tracking_url": f"https://transimpexexpress.am/tracking/{tracking_number}",
                             "notify_customer": True
                         }
                     }
+                    update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments/{fulfillment_id}.json"
+                    requests.put(update_url, json=update_data, headers=shopify_headers)
+                
+                self._mark_order_processed(order_id, shopify_headers)
+                return True
+            else:
+                print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"❌ Simple fulfillment error: {str(e)}")
 
-                    fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
-                    response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-                    if response.status_code in [201, 200]:
-                        print("✅ Fulfillment created successfully!")
-                        self._mark_order_processed(order_id, shopify_headers)
-                        return True
-                    else:
-                        print(f"❌ Fulfillment failed: {response.status_code}")
-    except Exception as e:
-        print(f"⚠️ FulfillmentOrder API failed: {str(e)}")
-
-    # APPROACH 2: Simple fulfillment (fallback)
-    print("🔄 Trying simple fulfillment approach...")
-    try:
-        fulfillment_data = {
-            "fulfillment": {
-                "tracking_number": str(tracking_number),
-                "tracking_company": "TransImpex Express",
-                "notify_customer": False
-            }
-        }
-
-        fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
-        response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-        if response.status_code in [201, 200]:
-            print("✅ Simple fulfillment created successfully!")
-            
-            # Try to add tracking URL
-            fulfillment_id = response.json().get('fulfillment', {}).get('id')
-            if fulfillment_id:
-                update_data = {
-                    "fulfillment": {
-                        "id": fulfillment_id,
-                        "tracking_url": f"https://transimpexexpress.am/tracking/{tracking_number}",
-                        "notify_customer": True
-                    }
+        # APPROACH 3: Manual order update (last resort)
+        print("🔄 Trying manual order update...")
+        try:
+            order_update_data = {
+                "order": {
+                    "id": order_id,
+                    "fulfillment_status": "fulfilled",
+                    "tags": "processed,fulfilled",
+                    "note_attributes": [
+                        {
+                            "name": "tracking_number",
+                            "value": str(tracking_number)
+                        },
+                        {
+                            "name": "courier", 
+                            "value": "TransImpex Express"
+                        }
+                    ]
                 }
-                update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments/{fulfillment_id}.json"
-                requests.put(update_url, json=update_data, headers=shopify_headers)
+            }
             
-            self._mark_order_processed(order_id, shopify_headers)
-            return True
-        else:
-            print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"❌ Simple fulfillment error: {str(e)}")
-
-    # APPROACH 3: Manual order update (last resort)
-    print("🔄 Trying manual order update...")
-    try:
-        order_update_data = {
-            "order": {
-                "id": order_id,
-                "fulfillment_status": "fulfilled",
-                "tags": "processed,fulfilled",
-                "note_attributes": [
-                    {
-                        "name": "tracking_number",
-                        "value": str(tracking_number)
-                    },
-                    {
-                        "name": "courier", 
-                        "value": "TransImpex Express"
-                    }
-                ]
-            }
-        }
-        
-        order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-        response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
-        
-        if response.status_code == 200:
-            print("✅ Order manually updated with fulfillment details!")
-            return True
-        else:
-            print(f"❌ Manual update failed: {response.status_code}")
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
+            
+            if response.status_code == 200:
+                print("✅ Order manually updated with fulfillment details!")
+                return True
+            else:
+                print(f"❌ Manual update failed: {response.status_code}")
+                return False
+        except Exception as e:
+            print(f"❌ Manual update error: {str(e)}")
             return False
-    except Exception as e:
-        print(f"❌ Manual update error: {str(e)}")
-        return False
 
-def _mark_order_processed(self, order_id, shopify_headers):
-    """Mark order as processed in Shopify"""
-    try:
-        order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-        update_tags_data = {
-            "order": {
-                "id": order_id,
-                "tags": "processed,fulfilled"
+    def _mark_order_processed(self, order_id, shopify_headers):
+        """Mark order as processed in Shopify"""
+        try:
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            update_tags_data = {
+                "order": {
+                    "id": order_id,
+                    "tags": "processed,fulfilled"
+                }
             }
+            requests.put(order_url, json=update_tags_data, headers=shopify_headers)
+            print("✅ Order tagged as 'processed,fulfilled'")
+        except Exception as e:
+            print(f"⚠️ Could not update order tags: {str(e)}")
+
+    def map_region_to_province(self, region_name):
+        """Map Shopify regions to courier province IDs"""
+        province_mapping = {
+            'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
+            'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
+            'Vayots Dzor': 10, 'Yerevan': 11
         }
-        requests.put(order_url, json=update_tags_data, headers=shopify_headers)
-        print("✅ Order tagged as 'processed,fulfilled'")
-    except Exception as e:
-        print(f"⚠️ Could not update order tags: {str(e)}")
+        return province_mapping.get(region_name, 11)
 
 class CourierAutomation:
     def __init__(self):
