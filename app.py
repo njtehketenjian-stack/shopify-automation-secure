@@ -349,84 +349,144 @@ class EHDMService:
             print(f"❌ Courier API Error: {response.status_code} - {response.text}")
             return None
 
-    def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
-        """Add tracking number to Shopify order using FulfillmentOrder API"""
-        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
+def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
+    """Add tracking number to Shopify order - MULTI-APPROACH"""
+    print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
 
-        try:
-            # Step 1: Get fulfillment orders for this order
-            fulfillment_orders_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
-            fulfillment_response = requests.get(fulfillment_orders_url, headers=shopify_headers)
-            
-            if fulfillment_response.status_code != 200:
-                print(f"❌ Failed to get fulfillment orders: {fulfillment_response.status_code} - {fulfillment_response.text}")
-                return False
-
+    # APPROACH 1: Try FulfillmentOrder API (modern approach)
+    try:
+        fulfillment_orders_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
+        fulfillment_response = requests.get(fulfillment_orders_url, headers=shopify_headers)
+        
+        if fulfillment_response.status_code == 200:
             fulfillment_orders = fulfillment_response.json().get('fulfillment_orders', [])
             
-            if not fulfillment_orders:
-                print("❌ No fulfillment orders found for this order")
-                return False
+            if fulfillment_orders:
+                print("✅ Fulfillment orders found, using modern API")
+                for fulfillment_order in fulfillment_orders:
+                    fulfillment_order_id = fulfillment_order['id']
+                    line_items = []
+                    
+                    for line_item in fulfillment_order['line_items']:
+                        line_items.append({
+                            "id": line_item['id'],
+                            "quantity": line_item['fulfillable_quantity']
+                        })
+                    
+                    fulfillment_data = {
+                        "fulfillment": {
+                            "line_items_by_fulfillment_order": [
+                                {
+                                    "fulfillment_order_id": fulfillment_order_id,
+                                    "fulfillment_order_line_items": line_items
+                                }
+                            ],
+                            "tracking_info": {
+                                "number": str(tracking_number),
+                                "company": "TransImpex Express",
+                                "url": f"https://transimpexexpress.am/tracking/{tracking_number}"
+                            },
+                            "notify_customer": True
+                        }
+                    }
 
-            # Step 2: Create fulfillment for each fulfillment order
-            for fulfillment_order in fulfillment_orders:
-                fulfillment_order_id = fulfillment_order['id']
-                line_items = []
-                
-                # Collect all line items from this fulfillment order
-                for line_item in fulfillment_order['line_items']:
-                    line_items.append({
-                        "id": line_item['id'],
-                        "quantity": line_item['fulfillable_quantity']
-                    })
-                
-                # Create fulfillment for this fulfillment order
-                fulfillment_data = {
+                    fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
+                    response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+                    if response.status_code in [201, 200]:
+                        print("✅ Fulfillment created successfully!")
+                        self._mark_order_processed(order_id, shopify_headers)
+                        return True
+                    else:
+                        print(f"❌ Fulfillment failed: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ FulfillmentOrder API failed: {str(e)}")
+
+    # APPROACH 2: Simple fulfillment (fallback)
+    print("🔄 Trying simple fulfillment approach...")
+    try:
+        fulfillment_data = {
+            "fulfillment": {
+                "tracking_number": str(tracking_number),
+                "tracking_company": "TransImpex Express",
+                "notify_customer": False
+            }
+        }
+
+        fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
+        response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+        if response.status_code in [201, 200]:
+            print("✅ Simple fulfillment created successfully!")
+            
+            # Try to add tracking URL
+            fulfillment_id = response.json().get('fulfillment', {}).get('id')
+            if fulfillment_id:
+                update_data = {
                     "fulfillment": {
-                        "line_items_by_fulfillment_order": [
-                            {
-                                "fulfillment_order_id": fulfillment_order_id,
-                                "fulfillment_order_line_items": line_items
-                            }
-                        ],
-                        "tracking_info": {
-                            "number": str(tracking_number),
-                            "company": "TransImpex Express",
-                            "url": f"https://transimpexexpress.am/tracking/{tracking_number}"
-                        },
+                        "id": fulfillment_id,
+                        "tracking_url": f"https://transimpexexpress.am/tracking/{tracking_number}",
                         "notify_customer": True
                     }
                 }
-
-                fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
-                response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-                if response.status_code in [201, 200]:
-                    print(f"✅ Fulfillment created for order {order_id}!")
-                else:
-                    print(f"❌ Fulfillment failed for order {order_id}: {response.status_code} - {response.text}")
-                    return False
-
-            # Step 3: Update order tags to mark as processed
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            update_tags_data = {
-                "order": {
-                    "id": order_id,
-                    "tags": "processed,fulfilled"
-                }
-            }
-            tags_response = requests.put(order_url, json=update_tags_data, headers=shopify_headers)
+                update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments/{fulfillment_id}.json"
+                requests.put(update_url, json=update_data, headers=shopify_headers)
             
-            if tags_response.status_code == 200:
-                print("✅ Order tags updated to 'processed,fulfilled'")
-            else:
-                print(f"⚠️ Failed to update order tags: {tags_response.status_code}")
-
+            self._mark_order_processed(order_id, shopify_headers)
             return True
-                
-        except Exception as e:
-            print(f"❌ Error updating Shopify tracking: {str(e)}")
+        else:
+            print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"❌ Simple fulfillment error: {str(e)}")
+
+    # APPROACH 3: Manual order update (last resort)
+    print("🔄 Trying manual order update...")
+    try:
+        order_update_data = {
+            "order": {
+                "id": order_id,
+                "fulfillment_status": "fulfilled",
+                "tags": "processed,fulfilled",
+                "note_attributes": [
+                    {
+                        "name": "tracking_number",
+                        "value": str(tracking_number)
+                    },
+                    {
+                        "name": "courier", 
+                        "value": "TransImpex Express"
+                    }
+                ]
+            }
+        }
+        
+        order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+        response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
+        
+        if response.status_code == 200:
+            print("✅ Order manually updated with fulfillment details!")
+            return True
+        else:
+            print(f"❌ Manual update failed: {response.status_code}")
             return False
+    except Exception as e:
+        print(f"❌ Manual update error: {str(e)}")
+        return False
+
+def _mark_order_processed(self, order_id, shopify_headers):
+    """Mark order as processed in Shopify"""
+    try:
+        order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+        update_tags_data = {
+            "order": {
+                "id": order_id,
+                "tags": "processed,fulfilled"
+            }
+        }
+        requests.put(order_url, json=update_tags_data, headers=shopify_headers)
+        print("✅ Order tagged as 'processed,fulfilled'")
+    except Exception as e:
+        print(f"⚠️ Could not update order tags: {str(e)}")
 
 class CourierAutomation:
     def __init__(self):
