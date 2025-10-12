@@ -248,13 +248,13 @@ class EHDMService:
         return "Yerevan"
 
     def map_region_to_province(self, region_name):
-    """Map Shopify regions to courier province IDs"""
-    province_mapping = {
-        'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
-        'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
-        'Vayots Dzor': 10, 'Yerevan': 11
-    }
-    return province_mapping.get(region_name, 11)  # Default to Yerevan
+        """Map Shopify regions to courier province IDs"""
+        province_mapping = {
+            'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
+            'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
+            'Vayots Dzor': 10, 'Yerevan': 11
+        }
+        return province_mapping.get(region_name, 11)
 
     def create_courier_order(self, shopify_order, retry_count=0):
         """Create draft order with courier using REAL customer data"""
@@ -349,45 +349,65 @@ class EHDMService:
             print(f"❌ Courier API Error: {response.status_code} - {response.text}")
             return None
 
-def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
-    """Add tracking number to Shopify order - SIMPLEST APPROACH"""
-    print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
+    def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
+        """Add tracking number to Shopify order using FulfillmentOrder API"""
+        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
 
-    try:
-        # ULTRA SIMPLE: Just create a basic fulfillment
-        fulfillment_data = {
-            "fulfillment": {
-                "tracking_number": str(tracking_number),
-                "tracking_company": "TransImpex Express",
-                "notify_customer": False  # Start without notification
-            }
-        }
-
-        fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
-        response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-        if response.status_code in [201, 200]:
-            print("✅ Shopify fulfillment created successfully!")
+        try:
+            # Step 1: Get fulfillment orders for this order
+            fulfillment_orders_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
+            fulfillment_response = requests.get(fulfillment_orders_url, headers=shopify_headers)
             
-            # Now add the tracking URL separately
-            fulfillment_id = response.json().get('fulfillment', {}).get('id')
-            if fulfillment_id:
-                update_data = {
+            if fulfillment_response.status_code != 200:
+                print(f"❌ Failed to get fulfillment orders: {fulfillment_response.status_code} - {fulfillment_response.text}")
+                return False
+
+            fulfillment_orders = fulfillment_response.json().get('fulfillment_orders', [])
+            
+            if not fulfillment_orders:
+                print("❌ No fulfillment orders found for this order")
+                return False
+
+            # Step 2: Create fulfillment for each fulfillment order
+            for fulfillment_order in fulfillment_orders:
+                fulfillment_order_id = fulfillment_order['id']
+                line_items = []
+                
+                # Collect all line items from this fulfillment order
+                for line_item in fulfillment_order['line_items']:
+                    line_items.append({
+                        "id": line_item['id'],
+                        "quantity": line_item['fulfillable_quantity']
+                    })
+                
+                # Create fulfillment for this fulfillment order
+                fulfillment_data = {
                     "fulfillment": {
-                        "id": fulfillment_id,
-                        "tracking_url": f"https://transimpexexpress.am/tracking/{tracking_number}",
-                        "notify_customer": True  # Now send notification
+                        "line_items_by_fulfillment_order": [
+                            {
+                                "fulfillment_order_id": fulfillment_order_id,
+                                "fulfillment_order_line_items": line_items
+                            }
+                        ],
+                        "tracking_info": {
+                            "number": str(tracking_number),
+                            "company": "TransImpex Express",
+                            "url": f"https://transimpexexpress.am/tracking/{tracking_number}"
+                        },
+                        "notify_customer": True
                     }
                 }
-                update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments/{fulfillment_id}.json"
-                update_response = requests.put(update_url, json=update_data, headers=shopify_headers)
-                
-                if update_response.status_code in [200, 201]:
-                    print("✅ Tracking URL and customer notification added!")
+
+                fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
+                response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+                if response.status_code in [201, 200]:
+                    print(f"✅ Fulfillment created for order {order_id}!")
                 else:
-                    print(f"⚠️ Could not add tracking URL: {update_response.status_code}")
-            
-            # Mark order as processed
+                    print(f"❌ Fulfillment failed for order {order_id}: {response.status_code} - {response.text}")
+                    return False
+
+            # Step 3: Update order tags to mark as processed
             order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
             update_tags_data = {
                 "order": {
@@ -398,46 +418,15 @@ def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
             tags_response = requests.put(order_url, json=update_tags_data, headers=shopify_headers)
             
             if tags_response.status_code == 200:
-                print("✅ Order tagged as 'processed,fulfilled'")
-            
+                print("✅ Order tags updated to 'processed,fulfilled'")
+            else:
+                print(f"⚠️ Failed to update order tags: {tags_response.status_code}")
+
             return True
-        else:
-            print(f"❌ Shopify fulfillment failed: {response.status_code} - {response.text}")
-            
-            # Debug: Check what's in the order
-            self.debug_order_status(order_id, shopify_headers)
+                
+        except Exception as e:
+            print(f"❌ Error updating Shopify tracking: {str(e)}")
             return False
-                
-    except Exception as e:
-        print(f"❌ Error updating Shopify tracking: {str(e)}")
-        return False
-
-def debug_order_status(self, order_id, shopify_headers):
-    """Debug why fulfillment might be failing"""
-    try:
-        order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-        response = requests.get(order_url, headers=shopify_headers)
-        
-        if response.status_code == 200:
-            order_data = response.json().get('order', {})
-            print(f"🔍 ORDER DEBUG - Status: {order_data.get('financial_status')}")
-            print(f"🔍 ORDER DEBUG - Fulfillment: {order_data.get('fulfillment_status')}")
-            print(f"🔍 ORDER DEBUG - Line Items: {len(order_data.get('line_items', []))}")
-            
-            for item in order_data.get('line_items', []):
-                print(f"🔍 LINE ITEM: {item.get('name')} - Qty: {item.get('quantity')} - Fulfillable: {item.get('fulfillable_quantity')}")
-                
-    except Exception as e:
-        print(f"🔍 Debug error: {str(e)}")
-
-    def map_region_to_province(self, region_name):
-        """Map Shopify regions to courier province IDs"""
-        province_mapping = {
-            'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
-            'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
-            'Vayots Dzor': 10, 'Yerevan': 11
-        }
-        return province_mapping.get(region_name, 11)
 
 class CourierAutomation:
     def __init__(self):
@@ -692,7 +681,7 @@ def home():
     - ✅ DUPLICATE DETECTION: Prevents re-processing same orders<br>
     - ✅ BARCODE RETRY: Auto-retry with new IDs on conflicts<br>
     - ✅ COMPLETE ORDER DATA: Fetches full customer details from API<br>
-    - ✅ MODERN FULFILLMENT: Uses FulfillmentOrder API (fixes 406 errors)<br><br>
+    - ✅ MODERN FULFILLMENT: Uses FulfillmentOrder API<br><br>
     
     <strong>Setup Required:</strong><br>
     1. Add Shopify webhook: orders/updated → /webhook/order-updated<br>
