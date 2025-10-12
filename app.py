@@ -247,6 +247,15 @@ class EHDMService:
         
         return "Yerevan"
 
+    def map_region_to_province(self, region_name):
+    """Map Shopify regions to courier province IDs"""
+    province_mapping = {
+        'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
+        'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
+        'Vayots Dzor': 10, 'Yerevan': 11
+    }
+    return province_mapping.get(region_name, 11)  # Default to Yerevan
+
     def create_courier_order(self, shopify_order, retry_count=0):
         """Create draft order with courier using REAL customer data"""
         print("🔄 Creating courier order...")
