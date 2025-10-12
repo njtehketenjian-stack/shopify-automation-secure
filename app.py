@@ -62,199 +62,193 @@ class EHDMService:
         
         return False
 
-    def extract_customer_data(self, shopify_order):
-        """
-        Extract customer data using priority-based fallback system
-        """
-        shipping_address = shopify_order.get('shipping_address', {})
-        billing_address = shopify_order.get('billing_address', {})
-        customer = shopify_order.get('customer', {})
-        default_address = customer.get('default_address', {})
-        
-        print("=== DEBUG Customer Data Extraction ===")
-        print(f"Order Email: {shopify_order.get('email')}")
-        print(f"Contact Email: {shopify_order.get('contact_email')}")
-        print(f"Shipping Address: {shipping_address}")
-        print(f"Billing Address: {billing_address}")
-        print(f"Customer Object: {customer}")
-        print(f"Default Address: {default_address}")
-        
-        # Try to get phone from order level first
-        order_phone = shopify_order.get('phone')
-        if order_phone:
-            print(f"📞 Found phone at order level: {order_phone}")
-        
-        # Priority 1: Extract name with fallbacks
-        name = self._extract_name(shipping_address, billing_address, customer, default_address)
-        
-        # Priority 2: Extract address with fallbacks
-        address = self._extract_address(shipping_address, billing_address, default_address)
-        
-        # Priority 3: Extract phone with fallbacks - include order level phone
-        phone = order_phone or self._extract_phone(shipping_address, billing_address, customer, default_address)
-        
-        # Priority 4: Extract city with fallbacks
-        city = self._extract_city(shipping_address, billing_address, default_address)
-        
-        # Priority 5: Extract province with fallbacks
-        province = self._extract_province(shipping_address, billing_address, default_address)
-        
-        # Use order email as priority
-        email = shopify_order.get('email') or shopify_order.get('contact_email') or customer.get('email', '')
-        
-        customer_data = {
-            'name': name,
-            'address': address,
-            'phone': phone,
-            'city': city,
-            'province': province,
-            'email': email
-        }
-        
-        print(f"🎯 Final Extracted Customer Data: {customer_data}")
-        print("=== END DEBUG ===")
-        
-        return customer_data
-
-    def _extract_name(self, shipping_address, billing_address, customer, default_address):
-        """Extract customer name with fallbacks"""
-        # Try shipping address first
-        if shipping_address.get('first_name') or shipping_address.get('last_name'):
-            first_name = shipping_address.get('first_name', '').strip()
-            last_name = shipping_address.get('last_name', '').strip()
-            if first_name or last_name:
-                return f"{first_name} {last_name}".strip()
-        
-        # Try billing address
-        if billing_address.get('first_name') or billing_address.get('last_name'):
-            first_name = billing_address.get('first_name', '').strip()
-            last_name = billing_address.get('last_name', '').strip()
-            if first_name or last_name:
-                return f"{first_name} {last_name}".strip()
-        
-        # Try default address
-        if default_address.get('first_name') or default_address.get('last_name'):
-            first_name = default_address.get('first_name', '').strip()
-            last_name = default_address.get('last_name', '').strip()
-            if first_name or last_name:
-                return f"{first_name} {last_name}".strip()
-        
-        # Try customer object
-        if customer.get('first_name') or customer.get('last_name'):
-            first_name = customer.get('first_name', '').strip()
-            last_name = customer.get('last_name', '').strip()
-            if first_name or last_name:
-                return f"{first_name} {last_name}".strip()
-        
-        # Use email as last resort
+def extract_customer_data(self, shopify_order):
+    """
+    Extract customer data - ORDER DATA FIRST, customer data as fallback
+    """
+    # PRIMARY: Order-level shipping address (always contains checkout data)
+    shipping_address = shopify_order.get('shipping_address', {})
+    billing_address = shopify_order.get('billing_address', {})
+    
+    # SECONDARY: Customer object (fallback only)
+    customer = shopify_order.get('customer', {})
+    default_address = customer.get('default_address', {})
+    
+    print("=== DEBUG ORDER-BASED DATA EXTRACTION ===")
+    print(f"ORDER Shipping: {shipping_address}")
+    print(f"ORDER Billing: {billing_address}")
+    print(f"ORDER Email: {shopify_order.get('email')}")
+    print(f"ORDER Contact Email: {shopify_order.get('contact_email')}")
+    print(f"ORDER Phone: {shopify_order.get('phone')}")
+    
+    # PRIORITY 1: ORDER-LEVEL DATA (always use this first)
+    name = self._extract_name_from_order(shipping_address, billing_address, shopify_order)
+    address = self._extract_address_from_order(shipping_address, billing_address)
+    phone = shopify_order.get('phone') or self._extract_phone_from_order(shipping_address, billing_address)
+    email = shopify_order.get('email') or shopify_order.get('contact_email', '')
+    
+    # PRIORITY 2: Only use customer data as FALLBACK if order data is missing
+    if not name or name == "Customer":
+        name = self._extract_name_from_customer(customer, default_address)
+        print("🔄 Using customer fallback for name")
+    
+    if not address or address == "Address Not Provided":
+        address = self._extract_address_from_customer(default_address)
+        print("🔄 Using customer fallback for address")
+    
+    if not phone or phone == "+374 00 000 000":
+        phone = self._extract_phone_from_customer(customer, default_address)
+        print("🔄 Using customer fallback for phone")
+    
+    if not email:
         email = customer.get('email', '')
-        if email:
-            return email.split('@')[0]
-        
-        return "Customer"
+        print("🔄 Using customer fallback for email")
+    
+    customer_data = {
+        'name': name,
+        'address': address,
+        'phone': phone,
+        'city': self._extract_city(shipping_address, billing_address, default_address),
+        'province': self._extract_province(shipping_address, billing_address, default_address),
+        'email': email
+    }
+    
+    print(f"🎯 FINAL Customer Data: {customer_data}")
+    print("=== END DEBUG ===")
+    
+    return customer_data
 
-    def _extract_address(self, shipping_address, billing_address, default_address):
-        """Extract address with fallbacks"""
-        # Try shipping address first
-        if shipping_address.get('address1'):
-            address1 = shipping_address.get('address1', '').strip()
-            address2 = shipping_address.get('address2', '').strip()
-            address = f"{address1} {address2}".strip()
-            if address:
-                return address
-        
-        # Try billing address
-        if billing_address.get('address1'):
-            address1 = billing_address.get('address1', '').strip()
-            address2 = billing_address.get('address2', '').strip()
-            address = f"{address1} {address2}".strip()
-            if address:
-                return address
-        
-        # Try default address
-        if default_address.get('address1'):
-            address1 = default_address.get('address1', '').strip()
-            address2 = default_address.get('address2', '').strip()
-            address = f"{address1} {address2}".strip()
-            if address:
-                return address
-        
-        return "Address Not Provided"
+def _extract_name_from_order(self, shipping_address, billing_address, order):
+    """Extract name from ORDER data first"""
+    # Try shipping address from order
+    if shipping_address.get('first_name') or shipping_address.get('last_name'):
+        first_name = shipping_address.get('first_name', '').strip()
+        last_name = shipping_address.get('last_name', '').strip()
+        if first_name or last_name:
+            return f"{first_name} {last_name}".strip()
+    
+    # Try billing address from order
+    if billing_address.get('first_name') or billing_address.get('last_name'):
+        first_name = billing_address.get('first_name', '').strip()
+        last_name = billing_address.get('last_name', '').strip()
+        if first_name or last_name:
+            return f"{first_name} {last_name}".strip()
+    
+    return ""  # Empty string to trigger fallback
 
-    def _extract_phone(self, shipping_address, billing_address, customer, default_address):
-        """Extract phone number with fallbacks"""
-        # Try shipping address first
-        if shipping_address.get('phone'):
-            phone = shipping_address.get('phone', '').strip()
-            if phone:
-                return phone
-        
-        # Try billing address
-        if billing_address.get('phone'):
-            phone = billing_address.get('phone', '').strip()
-            if phone:
-                return phone
-        
-        # Try default address
-        if default_address.get('phone'):
-            phone = default_address.get('phone', '').strip()
-            if phone:
-                return phone
-        
-        # Try customer object
-        if customer.get('phone'):
-            phone = customer.get('phone', '').strip()
-            if phone:
-                return phone
-        
-        return "+374 00 000 000"
+def _extract_address_from_order(self, shipping_address, billing_address):
+    """Extract address from ORDER data first"""
+    # Try shipping address from order
+    if shipping_address.get('address1'):
+        address1 = shipping_address.get('address1', '').strip()
+        address2 = shipping_address.get('address2', '').strip()
+        address = f"{address1} {address2}".strip()
+        if address:
+            return address
+    
+    # Try billing address from order
+    if billing_address.get('address1'):
+        address1 = billing_address.get('address1', '').strip()
+        address2 = billing_address.get('address2', '').strip()
+        address = f"{address1} {address2}".strip()
+        if address:
+            return address
+    
+    return ""  # Empty string to trigger fallback
 
-    def _extract_city(self, shipping_address, billing_address, default_address):
-        """Extract city with fallbacks"""
-        # Try shipping address first
-        if shipping_address.get('city'):
-            city = shipping_address.get('city', '').strip()
-            if city:
-                return city
-        
-        # Try billing address
-        if billing_address.get('city'):
-            city = billing_address.get('city', '').strip()
-            if city:
-                return city
-        
-        # Try default address
-        if default_address.get('city'):
-            city = default_address.get('city', '').strip()
-            if city:
-                return city
-        
-        return "Yerevan"
+def _extract_phone_from_order(self, shipping_address, billing_address):
+    """Extract phone from ORDER data first"""
+    if shipping_address.get('phone'):
+        return shipping_address.get('phone', '').strip()
+    
+    if billing_address.get('phone'):
+        return billing_address.get('phone', '').strip()
+    
+    return ""  # Empty string to trigger fallback
 
-    def _extract_province(self, shipping_address, billing_address, default_address):
-        """Extract province with fallbacks"""
-        # Try shipping address first
-        if shipping_address.get('province'):
-            return shipping_address.get('province')
-        
-        # Try billing address
-        if billing_address.get('province'):
-            return billing_address.get('province')
-        
-        # Try default address
-        if default_address.get('province'):
-            return default_address.get('province')
-        
-        return "Yerevan"
+def _extract_name_from_customer(self, customer, default_address):
+    """Extract name from customer data (fallback only)"""
+    if customer.get('first_name') or customer.get('last_name'):
+        first_name = customer.get('first_name', '').strip()
+        last_name = customer.get('last_name', '').strip()
+        if first_name or last_name:
+            return f"{first_name} {last_name}".strip()
+    
+    if default_address.get('first_name') or default_address.get('last_name'):
+        first_name = default_address.get('first_name', '').strip()
+        last_name = default_address.get('last_name', '').strip()
+        if first_name or last_name:
+            return f"{first_name} {last_name}".strip()
+    
+    return "Customer"
 
-    def map_region_to_province(self, region_name):
-        """Map Shopify regions to courier province IDs"""
-        province_mapping = {
-            'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
-            'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
-            'Vayots Dzor': 10, 'Yerevan': 11
-        }
-        return province_mapping.get(region_name, 11)
+def _extract_address_from_customer(self, default_address):
+    """Extract address from customer data (fallback only)"""
+    if default_address.get('address1'):
+        address1 = default_address.get('address1', '').strip()
+        address2 = default_address.get('address2', '').strip()
+        address = f"{address1} {address2}".strip()
+        if address:
+            return address
+    
+    return "Address Not Provided"
+
+def _extract_phone_from_customer(self, customer, default_address):
+    """Extract phone from customer data (fallback only)"""
+    if customer.get('phone'):
+        return customer.get('phone', '').strip()
+    
+    if default_address.get('phone'):
+        return default_address.get('phone', '').strip()
+    
+    return "+374 00 000 000"
+
+def _extract_city(self, shipping_address, billing_address, default_address):
+    """Extract city with fallbacks"""
+    # Try shipping address first
+    if shipping_address.get('city'):
+        city = shipping_address.get('city', '').strip()
+        if city:
+            return city
+    
+    # Try billing address
+    if billing_address.get('city'):
+        city = billing_address.get('city', '').strip()
+        if city:
+            return city
+    
+    # Try default address
+    if default_address.get('city'):
+        city = default_address.get('city', '').strip()
+        if city:
+            return city
+    
+    return "Yerevan"
+
+def _extract_province(self, shipping_address, billing_address, default_address):
+    """Extract province with fallbacks"""
+    # Try shipping address first
+    if shipping_address.get('province'):
+        return shipping_address.get('province')
+    
+    # Try billing address
+    if billing_address.get('province'):
+        return billing_address.get('province')
+    
+    # Try default address
+    if default_address.get('province'):
+        return default_address.get('province')
+    
+    return "Yerevan"
+
+def map_region_to_province(self, region_name):
+    """Map Shopify regions to courier province IDs"""
+    province_mapping = {
+        'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
+        'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
+        'Vayots Dzor': 10, 'Yerevan': 11
+    }
+    return province_mapping.get(region_name, 11)
 
     def create_courier_order(self, shopify_order, retry_count=0):
         """Create draft order with courier using REAL customer data"""
