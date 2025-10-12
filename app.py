@@ -539,8 +539,8 @@ class CourierAutomation:
                 print(f"⏭️ Order {order_id} was already processed, skipping duplicate")
                 return True
             
-            # Get COMPLETE order details from Shopify API with ALL fields
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json?fields=id,order_number,email,created_at,updated_at,processed_at,total_price,total_tax,subtotal_price,total_discounts,total_line_items_price,total_shipping_price_set,taxes_included,currency,financial_status,confirmed,customer,contact_email,customer_locale,buyer_accepts_marketing,cancel_reason,cancelled_at,cart_token,checkout_token,checkout_id,gateway,landing_site,referring_site,user_id,location_id,source_identifier,source_url,device_id,phone,customer_first_name,customer_last_name,customer_orders_count,customer_total_spent,tags,note,attributes,payment_gateway_names,tax_exempt,tax_lines,payment_details,payment_terms,processing_method,source_name,fulfillment_status,line_items,shipping_address,billing_address,fulfillments,refunds,shipping_lines,discount_codes,discount_allocations,note_attributes"
+            # Get COMPLETE order details from Shopify API - NO FIELD FILTERING!
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
             
             response = requests.get(order_url, headers=self.shopify_headers)
 
