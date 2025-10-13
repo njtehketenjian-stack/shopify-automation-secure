@@ -392,7 +392,7 @@ class EHDMService:
         # Try shipping address from order
         if shipping_address.get('first_name') or shipping_address.get('last_name'):
             first_name = shipping_address.get('first_name', '').strip()
-            last_name = shippingify_address.get('last_name', '').strip()
+            last_name = shipping_address.get('last_name', '').strip()
             if first_name or last_name:
                 return f"{first_name} {last_name}".strip()
         
