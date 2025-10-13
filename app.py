@@ -100,7 +100,7 @@ class EHDMService:
                 "cardAmount": receipt_data['cardAmount'],
                 "partialAmount": 0,  # No partial payments for new orders
                 "prePaymentAmount": 0,  # No prepayments
-                "partnerTin": "",  # Optional - buyer's TIN
+                "partnerTin": "0",  # Optional - buyer's TIN
                 "uniqueCode": unique_code
             }
             
