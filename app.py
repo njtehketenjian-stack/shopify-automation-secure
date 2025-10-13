@@ -593,56 +593,56 @@ class CourierAutomation:
             print(f"💥 ERROR processing order {order_id}: {str(e)}")
             return False
 
-def process_order_from_webhook(self, shopify_order):
-    """Process order using webhook data directly"""
-    order_id = shopify_order['id']
-    print(f"🚀 PROCESSING ORDER FROM WEBHOOK {order_id}")
-    
-    try:
-        # Check if order was already processed
-        if self.is_order_already_processed(order_id):
-            print(f"⏭️ Order {order_id} was already processed, skipping duplicate")
-            return True
+    def process_order_from_webhook(self, shopify_order):
+        """Process order using webhook data directly"""
+        order_id = shopify_order['id']
+        print(f"🚀 PROCESSING ORDER FROM WEBHOOK {order_id}")
         
-        # DEBUG: Check the complete webhook data
-        print("=== DEBUG WEBHOOK DATA ===")
-        print(f"Order #: {shopify_order.get('order_number')}")
-        print(f"Shipping Address: {shopify_order.get('shipping_address')}")
-        print(f"Billing Address: {shopify_order.get('billing_address')}")
-        print(f"Email: {shopify_order.get('email')}")
-        print(f"Phone: {shopify_order.get('phone')}")
-        print("=== END DEBUG ===")
-        
-        # Process with EHDM service using webhook data
-        ehdm_service = EHDMService()
-        
-        # Generate fiscal receipt with PayX first
-        if ehdm_service.login():
-            print("✅ PayX login successful, ready for receipt generation")
-        else:
-            print("❌ PayX login failed, but continuing with shipping")
-        
-        # Create order with courier using REAL customer data from webhook
-        tracking_number = ehdm_service.create_courier_order(shopify_order)
-        
-        if tracking_number:
-            # Update Shopify with tracking and fulfill
-            success = ehdm_service.update_shopify_tracking(order_id, tracking_number, self.shopify_headers)
-            
-            if success:
-                print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
-                self.mark_order_as_processed(order_id)
+        try:
+            # Check if order was already processed
+            if self.is_order_already_processed(order_id):
+                print(f"⏭️ Order {order_id} was already processed, skipping duplicate")
                 return True
-            else:
-                print(f"❌ Failed to update Shopify with tracking for order {order_id}")
-                return False
-        else:
-            print(f"❌ Failed to create courier order for order {order_id}")
-            return False
             
-    except Exception as e:
-        print(f"💥 ERROR processing order {order_id}: {str(e)}")
-        return False
+            # DEBUG: Check the complete webhook data
+            print("=== DEBUG WEBHOOK DATA ===")
+            print(f"Order #: {shopify_order.get('order_number')}")
+            print(f"Shipping Address: {shopify_order.get('shipping_address')}")
+            print(f"Billing Address: {shopify_order.get('billing_address')}")
+            print(f"Email: {shopify_order.get('email')}")
+            print(f"Phone: {shopify_order.get('phone')}")
+            print("=== END DEBUG ===")
+            
+            # Process with EHDM service using webhook data
+            ehdm_service = EHDMService()
+            
+            # Generate fiscal receipt with PayX first
+            if ehdm_service.login():
+                print("✅ PayX login successful, ready for receipt generation")
+            else:
+                print("❌ PayX login failed, but continuing with shipping")
+            
+            # Create order with courier using REAL customer data from webhook
+            tracking_number = ehdm_service.create_courier_order(shopify_order)
+            
+            if tracking_number:
+                # Update Shopify with tracking and fulfill
+                success = ehdm_service.update_shopify_tracking(order_id, tracking_number, self.shopify_headers)
+                
+                if success:
+                    print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
+                    self.mark_order_as_processed(order_id)
+                    return True
+                else:
+                    print(f"❌ Failed to update Shopify with tracking for order {order_id}")
+                    return False
+            else:
+                print(f"❌ Failed to create courier order for order {order_id}")
+                return False
+                
+        except Exception as e:
+            print(f"💥 ERROR processing order {order_id}: {str(e)}")
+            return False
 
 def generate_webhook_id(webhook_data):
     """Generate unique ID for webhook to prevent duplicates"""
@@ -729,7 +729,7 @@ def handle_order_updated():
             
             # Process using webhook data directly
             automation = CourierAutomation()
-            success = automation.process_order_from_webhook(shopify_order)  # NEW METHOD
+            success = automation.process_order_from_webhook(shopify_order)
             
             if success:
                 print(f"✅ Order {order_number} processed successfully via webhook!")
