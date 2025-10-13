@@ -977,8 +977,11 @@ class CourierAutomation:
             tracking_number = ehdm_service.create_courier_order(shopify_order)
             
             if tracking_number:
-                # Update Shopify with tracking and fulfill - ENHANCED: With shipping links
-                success = ehdm_service.update_shopify_tracking_with_shipping_links(order_id, tracking_number, self.shopify_headers)
+                # Update Shopify with tracking and fulfill - ENHANCED: With shipping links AND receipt URL
+               receipt_url = receipt_data.get('link') if receipt_success else None
+               success = ehdm_service.update_shopify_tracking_with_shipping_links(
+                   order_id, tracking_number, self.shopify_headers, receipt_url
+               )
                 
                 if success:
                     print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
