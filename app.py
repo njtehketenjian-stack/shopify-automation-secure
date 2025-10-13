@@ -983,7 +983,7 @@ class CourierAutomation:
                    order_id, tracking_number, self.shopify_headers, receipt_url
                )
                 
-                if success:
+            if success:
                     print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
                     self.mark_order_as_processed(order_id)
                     return True
