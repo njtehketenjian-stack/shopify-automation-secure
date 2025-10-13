@@ -246,12 +246,36 @@ class EHDMService:
             print(f"❌ {error_msg}")
             return False, error_msg
 
-    def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers):
-        """Enhanced: Update Shopify with proper shipping links"""
+    def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """Enhanced: Update Shopify with proper shipping links AND receipt URL"""
         print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
         
         # Construct proper tracking URL
-        tracking_url = f"https://transimpexexpress.am/tracking/{tracking_number}"
+        tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
+        
+        # Prepare note attributes with both tracking AND receipt URL
+        note_attributes = [
+            {
+                "name": "tracking_number",
+                "value": str(tracking_number)
+            },
+            {
+                "name": "tracking_url", 
+                "value": tracking_url
+            },
+            {
+                "name": "courier",
+                "value": "TransImpex Express"
+            }
+        ]
+        
+        # Add receipt URL if provided
+        if receipt_url:
+            note_attributes.append({
+                "name": "fiscal_receipt_url",
+                "value": receipt_url
+            })
+            print(f"📄 Adding fiscal receipt URL to order: {receipt_url}")
         
         # APPROACH 1: Try FulfillmentOrder API with tracking URL
         try:
@@ -295,6 +319,9 @@ class EHDMService:
 
                         if response.status_code in [201, 200]:
                             print("✅ Fulfillment created successfully with tracking URL!")
+                            # Also update order with receipt URL if available
+                            if receipt_url:
+                                self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
                             self._mark_order_processed(order_id, shopify_headers)
                             return True
                         else:
@@ -319,34 +346,24 @@ class EHDMService:
 
             if response.status_code in [201, 200]:
                 print("✅ Simple fulfillment created successfully with tracking URL!")
+                # Also update order with receipt URL if available
+                if receipt_url:
+                    self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
                 return True
             else:
                 print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
         except Exception as e:
             print(f"❌ Simple fulfillment error: {str(e)}")
 
-        # APPROACH 3: Manual order update with tracking info (last resort)
-        print("🔄 Trying manual order update with tracking URL...")
+        # APPROACH 3: Manual order update with tracking info AND receipt URL (last resort)
+        print("🔄 Trying manual order update with tracking URL and receipt URL...")
         try:
             order_update_data = {
                 "order": {
                     "id": order_id,
                     "fulfillment_status": "fulfilled",
                     "tags": "processed,fulfilled",
-                    "note_attributes": [
-                        {
-                            "name": "tracking_number",
-                            "value": str(tracking_number)
-                        },
-                        {
-                            "name": "tracking_url",
-                            "value": tracking_url
-                        },
-                        {
-                            "name": "courier", 
-                            "value": "TransImpex Express"
-                        }
-                    ]
+                    "note_attributes": note_attributes  # Includes both tracking AND receipt URL
                 }
             }
             
@@ -354,7 +371,7 @@ class EHDMService:
             response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
             
             if response.status_code == 200:
-                print("✅ Order manually updated with tracking URL!")
+                print("✅ Order manually updated with tracking URL and receipt URL!")
                 return True
             else:
                 print(f"❌ Manual update failed: {response.status_code}")
@@ -362,6 +379,29 @@ class EHDMService:
         except Exception as e:
             print(f"❌ Manual update error: {str(e)}")
             return False
+
+    def _update_order_with_receipt_url(self, order_id, receipt_url, shopify_headers):
+        """Helper method to update order with receipt URL"""
+        try:
+            update_data = {
+                "order": {
+                    "id": order_id,
+                    "note_attributes": [
+                        {
+                            "name": "fiscal_receipt_url",
+                            "value": receipt_url
+                        }
+                    ]
+                }
+            }
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            response = requests.put(order_url, json=update_data, headers=shopify_headers)
+            if response.status_code == 200:
+                print("✅ Receipt URL added to order notes!")
+            else:
+                print(f"⚠️ Could not add receipt URL to order: {response.status_code}")
+        except Exception as e:
+            print(f"⚠️ Error adding receipt URL: {str(e)}")
 
     def extract_customer_data(self, shopify_order):
         """
