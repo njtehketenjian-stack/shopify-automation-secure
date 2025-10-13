@@ -34,6 +34,8 @@ class EHDMService:
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         }
+        # Store receipt data for return handling
+        self.receipts_processed = {}
     
     def login(self):
         """Get JWT token from E-HDM API"""
@@ -61,6 +63,273 @@ class EHDMService:
             print(f"❌ PayX login error: {str(e)}")
         
         return False
+
+    def generate_fiscal_receipt(self, shopify_order):
+        """
+        Generate fiscal receipt using EHDM API immediately after order confirmation
+        Returns: (success, receipt_data, error_message)
+        """
+        print("🧾 Generating fiscal receipt for EHDM...")
+        
+        try:
+            # Check if receipt was already generated for this order
+            order_id = shopify_order['id']
+            if str(order_id) in self.receipts_processed:
+                print(f"📋 Receipt already generated for order {order_id}, skipping")
+                return True, self.receipts_processed[str(order_id)], "Receipt already exists"
+            
+            # Validate we have a valid token
+            if not self.token:
+                print("❌ No valid token for EHDM API")
+                return False, None, "No valid authentication token"
+            
+            # Prepare receipt data
+            receipt_data = self._prepare_receipt_data(shopify_order)
+            if not receipt_data:
+                return False, None, "Failed to prepare receipt data"
+            
+            # Generate unique code (non-repeating, max 30 chars)
+            unique_code = self._generate_unique_code(shopify_order)
+            
+            # Prepare the complete payload
+            payload = {
+                "products": receipt_data['products'],
+                "additionalDiscount": receipt_data.get('additionalDiscount', 0),
+                "additionalDiscountType": receipt_data.get('additionalDiscountType', 0),
+                "cashAmount": receipt_data['cashAmount'],
+                "cardAmount": receipt_data['cardAmount'],
+                "partialAmount": 0,  # No partial payments for new orders
+                "prePaymentAmount": 0,  # No prepayments
+                "partnerTin": "",  # Optional - buyer's TIN
+                "uniqueCode": unique_code
+            }
+            
+            # DEBUG: Print payload for verification
+            print("=== DEBUG EHDM Receipt Payload ===")
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            print("=== END DEBUG ===")
+            
+            # Make API call to generate receipt
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            print("📤 Sending receipt to EHDM API...")
+            response = requests.post(f"{self.base_url}/api/Hdm/Print", 
+                                   json=payload, 
+                                   headers=headers)
+            
+            if response.status_code == 200:
+                result = response.json()
+                print("✅ Fiscal receipt generated successfully!")
+                
+                # Store receipt data for future reference
+                receipt_info = {
+                    'receipt_id': result.get('receiptId'),
+                    'unique_code': unique_code,
+                    'link': result.get('link'),
+                    'response_data': result
+                }
+                
+                # Cache the receipt
+                self.receipts_processed[str(order_id)] = receipt_info
+                
+                # Send receipt via email to customer
+                self._send_receipt_email(result.get('receiptId'), shopify_order)
+                
+                return True, receipt_info, "Receipt generated successfully"
+                
+            else:
+                error_msg = f"EHDM API Error: {response.status_code} - {response.text}"
+                print(f"❌ {error_msg}")
+                return False, None, error_msg
+                
+        except Exception as e:
+            error_msg = f"Receipt generation error: {str(e)}"
+            print(f"❌ {error_msg}")
+            return False, None, error_msg
+
+    def _prepare_receipt_data(self, shopify_order):
+        """
+        Prepare receipt data from Shopify order format to EHDM format
+        """
+        try:
+            line_items = shopify_order.get('line_items', [])
+            total_amount = float(shopify_order.get('total_price', 0))
+            
+            # Map payment method to cash/card amounts
+            # Note: This is a simplified mapping - adjust based on your payment gateway
+            payment_method = shopify_order.get('payment_gateway_names', ['card'])[0].lower() if shopify_order.get('payment_gateway_names') else 'card'
+            
+            if 'cash' in payment_method:
+                cash_amount = total_amount
+                card_amount = 0
+            else:
+                cash_amount = 0
+                card_amount = total_amount
+            
+            # Prepare products array for EHDM
+            products = []
+            receipt_product_id = 0
+            
+            for item in line_items:
+                product = {
+                    "adgCode": "5401",  # Default HS code - adjust based on your products
+                    "goodCode": str(item.get('product_id', '')),
+                    "goodName": item['name'][:50],  # Max 50 characters
+                    "quantity": float(item['quantity']),
+                    "unit": "pcs",  # Default unit - adjust based on your products
+                    "price": float(item['price']),
+                    "discount": 0,  # No individual product discounts
+                    "discountType": 0,  # No discount
+                    "receiptProductId": receipt_product_id,
+                    "dep": 1  # 1-Taxable with VAT (adjust based on your tax requirements)
+                }
+                products.append(product)
+                receipt_product_id += 1
+            
+            # If no products (shouldn't happen), add a default product
+            if not products:
+                products.append({
+                    "adgCode": "5401",
+                    "goodCode": "default",
+                    "goodName": "Online Order Items",
+                    "quantity": 1.0,
+                    "unit": "pcs",
+                    "price": total_amount,
+                    "discount": 0,
+                    "discountType": 0,
+                    "receiptProductId": 0,
+                    "dep": 1
+                })
+            
+            receipt_data = {
+                'products': products,
+                'additionalDiscount': 0,
+                'additionalDiscountType': 0,
+                'cashAmount': cash_amount,
+                'cardAmount': card_amount
+            }
+            
+            return receipt_data
+            
+        except Exception as e:
+            print(f"❌ Error preparing receipt data: {str(e)}")
+            return None
+
+    def _generate_unique_code(self, shopify_order):
+        """
+        Generate unique code for receipt (non-repeating, max 30 chars)
+        Format: SHOPIFY_{order_id}_{timestamp}
+        """
+        order_id = shopify_order['id']
+        timestamp = int(time.time())
+        unique_code = f"SHOPIFY_{order_id}_{timestamp}"
+        
+        # Ensure it doesn't exceed 30 characters
+        if len(unique_code) > 30:
+            unique_code = unique_code[:30]
+            
+        return unique_code
+
+    def _send_receipt_email(self, receipt_id, shopify_order):
+        """
+        Send receipt via email to customer using EHDM API
+        """
+        try:
+            if not receipt_id:
+                print("⚠️ No receipt ID provided for email sending")
+                return False
+            
+            customer_email = shopify_order.get('email') or shopify_order.get('contact_email')
+            if not customer_email:
+                print("⚠️ No customer email found for receipt sending")
+                return False
+            
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            email_data = {
+                "historyId": 0,
+                "receiptId": receipt_id,
+                "email": customer_email,
+                "language": 1  # 0-Armenian, 1-English, 2-Russian
+            }
+            
+            print(f"📧 Sending receipt to customer email: {customer_email}")
+            response = requests.post(f"{self.base_url}/api/Hdm/SendEmail", 
+                                   json=email_data, 
+                                   headers=headers)
+            
+            if response.status_code == 200:
+                print("✅ Receipt sent to customer email successfully!")
+                return True
+            else:
+                print(f"⚠️ Failed to send email receipt: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"⚠️ Error sending receipt email: {str(e)}")
+            return False
+
+    def process_order_refund(self, shopify_order, refund_amount=None):
+        """
+        Process refund/return for an order using EHDM Reverse API
+        """
+        try:
+            order_id = shopify_order['id']
+            
+            # Check if we have receipt data for this order
+            if str(order_id) not in self.receipts_processed:
+                print(f"❌ No receipt found for order {order_id}, cannot process refund")
+                return False, "No receipt found for this order"
+            
+            receipt_data = self.receipts_processed[str(order_id)]
+            receipt_id = receipt_data.get('receipt_id')
+            
+            if not receipt_id:
+                print(f"❌ No receipt ID found for order {order_id}")
+                return False, "No receipt ID available"
+            
+            # Use provided refund amount or full order amount
+            if refund_amount is None:
+                refund_amount = float(shopify_order.get('total_price', 0))
+            
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            # For full refund, we use ReverseByReceiptId
+            refund_data = {
+                "receiptId": receipt_id
+            }
+            
+            print(f"🔄 Processing refund for order {order_id}, amount: {refund_amount}")
+            response = requests.post(f"{self.base_url}/api/Hdm/ReverseByReceiptId", 
+                                   json=refund_data, 
+                                   headers=headers)
+            
+            if response.status_code == 200:
+                print("✅ Refund processed successfully in EHDM system!")
+                return True, "Refund processed successfully"
+            else:
+                error_msg = f"Refund API Error: {response.status_code} - {response.text}"
+                print(f"❌ {error_msg}")
+                return False, error_msg
+                
+        except Exception as e:
+            error_msg = f"Refund processing error: {str(e)}"
+            print(f"❌ {error_msg}")
+            return False, error_msg
+
+    # EXISTING METHODS REMAIN UNCHANGED - ONLY NEW METHODS ADDED ABOVE
 
     def extract_customer_data(self, shopify_order):
         """
@@ -123,7 +392,7 @@ class EHDMService:
         # Try shipping address from order
         if shipping_address.get('first_name') or shipping_address.get('last_name'):
             first_name = shipping_address.get('first_name', '').strip()
-            last_name = shipping_address.get('last_name', '').strip()
+            last_name = shippingify_address.get('last_name', '').strip()
             if first_name or last_name:
                 return f"{first_name} {last_name}".strip()
         
