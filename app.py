@@ -311,6 +311,8 @@ class EHDMService:
             }
             
             print(f"🔄 Processing refund for order {order_id}, historyId: {history_id}")
+            print(f"📤 Sending refund data to EHDM Reverse API...")
+            
             response = requests.post(f"{self.base_url}/api/Hdm/Reverse", 
                                    json=refund_data, 
                                    headers=headers)
@@ -323,6 +325,8 @@ class EHDMService:
                 return_receipt_url = result.get('link')
                 if return_receipt_url:
                     print(f"📄 Return receipt URL: {return_receipt_url}")
+                else:
+                    print("⚠️ No return receipt URL in response")
                 
                 return True, "Return receipt generated successfully"
             else:
@@ -351,59 +355,111 @@ class EHDMService:
 
     def _create_fulfillment_with_tracking(self, order_id, tracking_number, shopify_headers, receipt_url=None):
         """
-        SIMPLE FIX: Just update the order with tracking info - let Shopify handle the fulfillment UI
+        FIXED: Create actual fulfillment to trigger shipping emails and auto-fill tracking
         """
         try:
             tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
             
-            print(f"📦 Adding tracking info to order {order_id}...")
+            print(f"📦 Creating fulfillment for order {order_id}...")
             
-            # Simply update the order with tracking information
-            # This will pre-fill the fulfillment form when you click "Fulfill item"
-            update_data = {
-                "order": {
-                    "id": order_id,
-                    "note_attributes": [
-                        {
-                            "name": "tracking_number",
-                            "value": str(tracking_number)
-                        },
-                        {
-                            "name": "tracking_company", 
-                            "value": "Other"
-                        },
-                        {
-                            "name": "tracking_url",
-                            "value": tracking_url
-                        }
-                    ]
+            # First, store tracking in metafields for UI auto-fill
+            self._store_tracking_metafields(order_id, tracking_number, tracking_url, shopify_headers)
+            
+            # Create actual fulfillment to trigger shipping emails
+            fulfillment_data = {
+                "fulfillment": {
+                    "tracking_number": str(tracking_number),
+                    "tracking_company": "Other",
+                    "tracking_url": tracking_url,
+                    "notify_customer": True,  # This triggers shipping email
+                    "line_items": self._get_fulfillment_line_items(order_id, shopify_headers)
                 }
             }
 
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2024-01/orders/{order_id}.json"
-            response = requests.put(order_url, json=update_data, headers=shopify_headers)
+            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2024-01/orders/{order_id}/fulfillments.json"
+            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
 
-            if response.status_code == 200:
-                print("✅ Tracking info added to order!")
-                print(f"📮 Tracking: {tracking_number}")
-                print(f"🚚 Carrier: Other")
-                print(f"🔗 URL: {tracking_url}")
+            if response.status_code in [201, 200]:
+                fulfillment_response = response.json().get('fulfillment', {})
+                print("✅ Fulfillment created successfully!")
+                print(f"📮 Tracking: {fulfillment_response.get('tracking_number')}")
+                print(f"📧 Customer notified: {fulfillment_response.get('notify_customer')}")
                 
-                # Add receipt URL if available
+                # Add receipt URL to order notes
                 if receipt_url:
                     self._add_receipt_to_order(order_id, receipt_url, shopify_headers)
                 
                 return True
             else:
-                print(f"❌ Failed to update order with tracking: {response.status_code} - {response.text}")
+                print(f"❌ Fulfillment creation failed: {response.status_code} - {response.text}")
                 return False
                         
         except Exception as e:
-            print(f"❌ Error adding tracking info: {str(e)}")
+            print(f"❌ Fulfillment error: {str(e)}")
             return False
 
+    def _store_tracking_metafields(self, order_id, tracking_number, tracking_url, shopify_headers):
+        """Store tracking info in metafields for UI auto-fill"""
+        try:
+            metafields = [
+                {
+                    "namespace": "tracking",
+                    "key": "number",
+                    "value": str(tracking_number),
+                    "type": "string"
+                },
+                {
+                    "namespace": "tracking", 
+                    "key": "company",
+                    "value": "Other",
+                    "type": "string"
+                },
+                {
+                    "namespace": "tracking",
+                    "key": "url", 
+                    "value": tracking_url,
+                    "type": "string"
+                }
+            ]
+            
+            for metafield in metafields:
+                metafield_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2024-01/orders/{order_id}/metafields.json"
+                response = requests.post(metafield_url, json={"metafield": metafield}, headers=shopify_headers)
+                
+                if response.status_code in [201, 200]:
+                    print(f"✅ Stored {metafield['key']} in metafields")
+                else:
+                    print(f"⚠️ Could not store {metafield['key']}: {response.status_code}")
+                    
+        except Exception as e:
+            print(f"⚠️ Error storing metafields: {str(e)}")
+
+    def _get_fulfillment_line_items(self, order_id, shopify_headers):
+        """Get line items for fulfillment"""
+        try:
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2024-01/orders/{order_id}.json"
+            response = requests.get(order_url, headers=shopify_headers)
+            
+            if response.status_code == 200:
+                order_data = response.json().get('order', {})
+                line_items = order_data.get('line_items', [])
+                
+                fulfillment_items = []
+                for item in line_items:
+                    if item.get('fulfillable_quantity', 0) > 0:
+                        fulfillment_items.append({
+                            "id": item['id'],
+                            "quantity": item['quantity']
+                        })
+                
+                return fulfillment_items
+        except Exception as e:
+            print(f"⚠️ Error getting line items: {str(e)}")
+        
+        return []
+
     def _add_receipt_to_order(self, order_id, receipt_url, shopify_headers):
-        """Add fiscal receipt to order notes"""
+        """Add fiscal receipt to order notes - FIXED NoneType error"""
         try:
             # Get current order to preserve existing notes
             order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2024-01/orders/{order_id}.json"
@@ -411,7 +467,7 @@ class EHDMService:
             
             if response.status_code == 200:
                 current_order = response.json().get('order', {})
-                current_note = current_order.get('note', '')
+                current_note = current_order.get('note') or ''  # Ensure string, not None
                 
                 receipt_note = f"Fiscal Receipt: {receipt_url}"
                 if receipt_note not in current_note:
@@ -528,15 +584,15 @@ class EHDMService:
         return province_mapping.get(region_name, 11)
 
     def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
-        """FIXED: Update Shopify with tracking that auto-fills the fulfillment form"""
+        """FIXED: Update Shopify with tracking that auto-fills AND sends shipping email"""
         print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
         
-        # Use the simplified tracking approach
+        # Use the improved fulfillment approach
         if self._create_fulfillment_with_tracking(order_id, tracking_number, shopify_headers, receipt_url):
             self._mark_order_processed(order_id, shopify_headers)
             return True
         
-        print("❌ Failed to add tracking info to order")
+        print("❌ Failed to create fulfillment with tracking")
         return False
 
     def _mark_order_processed(self, order_id, shopify_headers):
@@ -1063,7 +1119,8 @@ def home():
     - ✅ DUPLICATE DETECTION: Prevents re-processing same orders<br>
     - ✅ BARCODE RETRY: Auto-retry with new IDs on conflicts<br>
     - ✅ COMPLETE ORDER DATA: Fetches full customer details from API<br>
-    - ✅ SIMPLE TRACKING: Auto-fills tracking info in Shopify UI<br>
+    - ✅ AUTO-FILL TRACKING: Stores tracking in metafields for UI auto-fill<br>
+    - ✅ AUTOMATIC SHIPPING EMAILS: Creates fulfillments to trigger customer notifications<br>
     - ✅ FIXED REFUNDS: Correct EHDM return receipt generation<br><br>
     
     <strong>Setup Required:</strong><br>
