@@ -756,14 +756,13 @@ class CourierAutomation:
             'Content-Type': 'application/json',
             'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN
         }
+        # FIXED: Use instance variable instead of global
+        self.processed_orders = processed_orders.copy() if processed_orders else {}
 
     def is_order_already_processed(self, order_id):
         """Check if order was already processed by our system"""
-        # Ensure processed_orders is never None
-        if processed_orders is None:
-            processed_orders = {}
-        
-        if str(order_id) in processed_orders:
+        # Use instance variable instead of global
+        if str(order_id) in self.processed_orders:
             print(f"📋 Order {order_id} found in processed orders cache")
             return True
         
@@ -778,13 +777,13 @@ class CourierAutomation:
                 order_notes = shopify_order.get('note', '')
                 if 'SHIPPING INFORMATION (AUTO-GENERATED)' in order_notes:
                     print(f"✅ Order {order_id} already processed by our system (found in notes)")
-                    processed_orders[str(order_id)] = True
+                    self.processed_orders[str(order_id)] = True
                     return True
                 
                 tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
                 if 'processed' in tags or 'ready-to-ship' in tags:
                     print(f"✅ Order {order_id} marked as processed in tags")
-                    processed_orders[str(order_id)] = True
+                    self.processed_orders[str(order_id)] = True
                     return True
                     
         except Exception as e:
@@ -794,8 +793,10 @@ class CourierAutomation:
 
     def mark_order_as_processed(self, order_id):
         """Mark order as processed in our system"""
-        processed_orders[str(order_id)] = True
+        self.processed_orders[str(order_id)] = True
         print(f"📝 Marked order {order_id} as processed in local cache")
+
+    # ... keep the rest of the methods exactly the same as before ...
 
     def process_order_immediately(self, order_id):
         """Process order immediately with PayX and Courier"""
