@@ -395,9 +395,14 @@ class EHDMService:
                     "tracking_number": str(tracking_number),
                     "tracking_company": "TransImpex Express",
                     "tracking_urls": [tracking_url],
-                    "notify_customer": True
+                    "notify_customer": True,
+                    "line_items": self._get_fulfillable_line_items(order_id, shopify_headers)
                 }
             }
+
+            # Add receipt URL to fulfillment notes so it appears in email
+            if receipt_url:
+                fulfillment_data["fulfillment"]["note"] = f"Fiscal Receipt: {receipt_url}"
 
             fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
             response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
@@ -405,7 +410,7 @@ class EHDMService:
             if response.status_code in [201, 200]:
                 print("✅ Simple fulfillment created successfully!")
                 
-                # Add receipt URL to order notes if available
+                # Also add receipt URL to order notes for permanent record
                 if receipt_url:
                     self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
                 
@@ -417,6 +422,29 @@ class EHDMService:
         except Exception as e:
             print(f"❌ Simple fulfillment error: {str(e)}")
             return False
+
+    def _get_fulfillable_line_items(self, order_id, shopify_headers):
+        """Get line items that need fulfillment"""
+        try:
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            response = requests.get(order_url, headers=shopify_headers)
+            
+            if response.status_code == 200:
+                order = response.json().get('order', {})
+                line_items = []
+                
+                for item in order.get('line_items', []):
+                    if item.get('fulfillable_quantity', 0) > 0:
+                        line_items.append({
+                            "id": item['id'],
+                            "quantity": item['fulfillable_quantity']
+                        })
+                
+                return line_items
+        except Exception as e:
+            print(f"⚠️ Error getting line items: {str(e)}")
+        
+        return None
 
     def _get_primary_location_id(self, shopify_headers):
         """
@@ -450,54 +478,57 @@ class EHDMService:
 
     def _update_order_manually(self, order_id, tracking_number, shopify_headers, receipt_url=None):
         """
-        Manual order update as fallback
+        Manual order update as fallback - enhanced to auto-fill fulfillment
         """
         try:
             tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
             
-            note_attributes = [
-                {
-                    "name": "tracking_number",
-                    "value": str(tracking_number)
-                },
-                {
-                    "name": "tracking_url", 
-                    "value": tracking_url
-                },
-                {
-                    "name": "courier",
-                    "value": "TransImpex Express"
-                }
-            ]
-            
-            # Add receipt URL if provided
-            if receipt_url:
-                note_attributes.append({
-                    "name": "fiscal_receipt_url",
-                    "value": receipt_url
-                })
-                print(f"📄 Adding fiscal receipt URL to order: {receipt_url}")
-            
-            order_update_data = {
-                "order": {
-                    "id": order_id,
-                    "fulfillment_status": "fulfilled",
-                    "tags": "processed,fulfilled",
-                    "note_attributes": note_attributes
+            # Create fulfillment with all details
+            fulfillment_data = {
+                "fulfillment": {
+                    "tracking_number": str(tracking_number),
+                    "tracking_company": "TransImpex Express", 
+                    "tracking_urls": [tracking_url],
+                    "notify_customer": False,  # We'll notify after adding receipt
+                    "line_items": self._get_fulfillable_line_items(order_id, shopify_headers)
                 }
             }
-            
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
-            
-            if response.status_code == 200:
-                print("✅ Order manually updated with tracking URL and receipt URL!")
+
+            # Add receipt to fulfillment note if available
+            if receipt_url:
+                fulfillment_data["fulfillment"]["note"] = f"Fiscal Receipt: {receipt_url}"
+
+            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
+            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+            if response.status_code in [201, 200]:
+                fulfillment_id = response.json().get('fulfillment', {}).get('id')
+                print("✅ Fulfillment created with tracking details!")
+                
+                # Now update with receipt and notify customer
+                if receipt_url and fulfillment_id:
+                    update_data = {
+                        "fulfillment": {
+                            "id": fulfillment_id,
+                            "note": f"Fiscal Receipt: {receipt_url}",
+                            "notify_customer": True
+                        }
+                    }
+                    update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments/{fulfillment_id}.json"
+                    requests.put(update_url, json=update_data, headers=shopify_headers)
+                    print("✅ Receipt added to fulfillment and customer notified!")
+                
+                # Also add to order notes
+                if receipt_url:
+                    self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
+                
                 return True
             else:
-                print(f"❌ Manual update failed: {response.status_code} - {response.text}")
+                print(f"❌ Fulfillment creation failed: {response.status_code}")
                 return False
+                
         except Exception as e:
-            print(f"❌ Manual update error: {str(e)}")
+            print(f"❌ Fulfillment error: {str(e)}")
             return False
 
     def _update_order_with_receipt_url(self, order_id, receipt_url, shopify_headers):
