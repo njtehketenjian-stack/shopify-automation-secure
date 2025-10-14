@@ -512,6 +512,103 @@ def _update_fulfillment_with_receipt(self, fulfillment_id, receipt_url, shopify_
         
         return None
 
+    def create_courier_order(self, shopify_order, retry_count=0):
+    """Create draft order with courier using REAL customer data"""
+    print("🔄 Creating courier order...")
+
+    # Extract customer data using priority-based fallback system
+    customer_data = self.extract_customer_data(shopify_order)
+    
+    if not customer_data:
+        print("❌ Cannot create courier order: No customer data found")
+        return None
+
+    line_items = shopify_order.get('line_items', [])
+
+    # Build order products array
+    order_products = []
+    for item in line_items:
+        price_in_cents = int(float(item['price']) * 100)
+        order_products.append({
+            "name": item['name'][:50],
+            "price": price_in_cents
+        })
+
+    # If no products, add a default item
+    if not order_products:
+        order_products.append({
+            "name": "Online Order Items",
+            "price": 100
+        })
+
+    # Generate barcode_id with retry suffix if needed
+    base_barcode_id = str(shopify_order['id'])
+    if retry_count > 0:
+        barcode_id = f"{base_barcode_id}-retry{retry_count}"
+        print(f"🔄 Using retry barcode_id: {barcode_id}")
+    else:
+        barcode_id = base_barcode_id
+
+    # Construct the API payload with REAL customer data
+    courier_order_data = {
+        "address_to": customer_data['address'][:100],
+        "province_id": self.map_region_to_province(customer_data['province']),
+        "city": customer_data['city'][:50],
+        "package_type": "Parcel",
+        "parcel_weight": "1.0",
+        "order_products": order_products,
+        "recipient_type": "Individual",
+        "person_name": customer_data['name'][:50],
+        "phone": customer_data['phone'][:20],
+        "barcode_id": barcode_id,
+        "is_payed": 1,
+        "delivery_method": "home",
+        "return_receipt": False,
+        "notes": f"Shopify Order #{shopify_order.get('order_number', '')} - {customer_data['email']}",
+        "label": 0
+    }
+
+    # Make API call to create draft order
+    courier_url = f"{COURIER_BASE_URL}/api/create-draft-order"
+    response = requests.post(courier_url, json=courier_order_data, headers=self.courier_headers)
+
+    if response.status_code == 200:
+        print("✅ Courier order created successfully!")
+
+        try:
+            courier_response = response.json()
+            # Try to extract real tracking number from response
+            tracking_number = (
+                courier_response.get('order', {}).get('key') or
+                courier_response.get('order', {}).get('barcode_id') or
+                courier_response.get('order', {}).get('id') or
+                barcode_id
+            )
+            print(f"✅ Real tracking number: {tracking_number}")
+            return tracking_number
+        except:
+            print("⚠️ Could not parse courier response, using barcode_id as tracking")
+            return barcode_id
+    elif response.status_code == 422 and "barcode id has already been taken" in response.text.lower():
+        print(f"🔄 Barcode ID conflict detected, retrying with new ID...")
+        if retry_count < 3:  # Max 3 retries
+            return self.create_courier_order(shopify_order, retry_count + 1)
+        else:
+            print("❌ Max retries reached for barcode_id conflict")
+            return None
+    else:
+        print(f"❌ Courier API Error: {response.status_code} - {response.text}")
+        return None
+
+    def map_region_to_province(self, region_name):
+        """Map Shopify regions to courier province IDs"""
+        province_mapping = {
+            'Aragatsotn': 1, 'Ararat': 2, 'Armavir': 3, 'Gegharkunik': 4,
+            'Kotayk': 5, 'Lori': 6, 'Shirak': 7, 'Syunik': 8, 'Tavush': 9,
+            'Vayots Dzor': 10, 'Yerevan': 11
+        }
+        return province_mapping.get(region_name, 11)
+
     def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
         """FIXED: Update Shopify with tracking that auto-fills the fulfillment form"""
         print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
