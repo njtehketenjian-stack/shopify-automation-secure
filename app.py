@@ -66,68 +66,97 @@ class EHDMService:
         
         return False
 
-    def _prepare_receipt_data(self, shopify_order):
-        """
-        Prepare receipt data for EHDM API from Shopify order
-        Returns: dict with products, amounts, and receipt details
-        """
-        try:
-            line_items = shopify_order.get('line_items', [])
-            products = []
-            total_amount = 0
+def _prepare_receipt_data(self, shopify_order):
+    """
+    Prepare receipt data for EHDM API from Shopify order
+    Returns: dict with products, amounts, and receipt details
+    """
+    try:
+        line_items = shopify_order.get('line_items', [])
+        products = []
+        total_amount = 0
+        
+        for item in line_items:
+            quantity = int(item.get('quantity', 1))
+            price = float(item.get('price', 0))
+            total_price = price * quantity
+            total_amount += total_price
             
-            for item in line_items:
-                quantity = int(item.get('quantity', 1))
-                price = float(item.get('price', 0))
-                total_price = price * quantity
-                total_amount += total_price
-                
-                product_data = {
-                    "name": item.get('name', 'Product')[:100],
-                    "price": int(total_price * 100),  # Convert to cents
-                    "quantity": quantity,
-                    "measure": "piece",
-                    "line": len(products) + 1
-                }
-                products.append(product_data)
+            # Extract product SKU or use default codes
+            sku = item.get('sku', '')
+            product_name = item.get('name', 'Product')[:100]
             
-            # If no products found, create a default product
-            if not products:
-                total_amount = float(shopify_order.get('total_price', 0))
-                products = [{
-                    "name": "Online Order Items",
-                    "price": int(total_amount * 100),
-                    "quantity": 1,
-                    "measure": "piece",
-                    "line": 1
-                }]
-            
-            # Determine payment method (cash vs card)
-            payment_gateway = shopify_order.get('gateway', '').lower()
-            if 'cash' in payment_gateway:
-                cash_amount = int(total_amount * 100)
-                card_amount = 0
+            # Generate product codes based on SKU or use defaults
+            if sku:
+                good_code = sku[:20]  # Use SKU as goodCode if available
+                adg_code = "GEN"  # General category code
             else:
-                cash_amount = 0
-                card_amount = int(total_amount * 100)
+                # Default codes for products without SKU
+                good_code = "DEF001"
+                adg_code = "GEN"
             
-            receipt_data = {
-                "products": products,
-                "additionalDiscount": 0,
-                "additionalDiscountType": 0,
-                "cashAmount": cash_amount,
-                "cardAmount": card_amount,
-                "partialAmount": 0,
-                "prePaymentAmount": 0,
-                "partnerTin": "0"
+            product_data = {
+                "name": product_name,
+                "price": int(total_price * 100),  # Convert to cents
+                "quantity": quantity,
+                "measure": "piece",
+                "line": len(products) + 1,
+                # REQUIRED FIELDS FOR EHDM API:
+                "unit": "piece",
+                "adgCode": adg_code,
+                "goodCode": good_code,
+                "goodName": product_name
             }
-            
-            print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
-            return receipt_data
-            
-        except Exception as e:
-            print(f"❌ Error preparing receipt data: {str(e)}")
-            return None
+            products.append(product_data)
+        
+        # If no products, add a default item with required fields
+        if not products:
+            total_amount = float(shopify_order.get('total_price', 0))
+            products = [{
+                "name": "Online Order Items",
+                "price": int(total_amount * 100),
+                "quantity": 1,
+                "measure": "piece",
+                "line": 1,
+                "unit": "piece",
+                "adgCode": "GEN",
+                "goodCode": "ONLINE001",
+                "goodName": "Online Order Items"
+            }]
+        
+        # Determine payment method (cash vs card)
+        payment_gateway = shopify_order.get('gateway', '').lower()
+        if 'cash' in payment_gateway:
+            cash_amount = int(total_amount * 100)
+            card_amount = 0
+        else:
+            cash_amount = 0
+            card_amount = int(total_amount * 100)
+        
+        receipt_data = {
+            "products": products,
+            "additionalDiscount": 0,
+            "additionalDiscountType": 0,
+            "cashAmount": cash_amount,
+            "cardAmount": card_amount,
+            "partialAmount": 0,
+            "prePaymentAmount": 0,
+            "partnerTin": "0"
+        }
+        
+        print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
+        
+        # DEBUG: Print product structure
+        print("=== DEBUG EHDM PRODUCT STRUCTURE ===")
+        for product in products:
+            print(f"Product: {product}")
+        print("=== END DEBUG ===")
+        
+        return receipt_data
+        
+    except Exception as e:
+        print(f"❌ Error preparing receipt data: {str(e)}")
+        return None
 
     def _generate_unique_code(self, shopify_order):
         """
