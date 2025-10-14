@@ -149,12 +149,6 @@ class EHDMService:
             
             print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
             
-            # DEBUG: Print product structure
-            print("=== DEBUG EHDM PRODUCT STRUCTURE ===")
-            for product in products:
-                print(f"Product: {product}")
-            print("=== END DEBUG ===")
-            
             return receipt_data
             
         except Exception as e:
@@ -164,9 +158,7 @@ class EHDMService:
     def _extract_hs_code(self, sku):
         """
         Extract HS code from SKU if possible, or use category mapping
-        You can customize this based on your product categories
         """
-        # Example mapping - customize based on your products
         category_mapping = {
             'CLOTH': '6109',  # T-shirts
             'ELEC': '8517',   # Telephones
@@ -175,12 +167,11 @@ class EHDMService:
             'BEAUTY': '3304', # Beauty products
         }
         
-        # Check if SKU contains category codes
         for category, hs_code in category_mapping.items():
             if category in sku.upper():
                 return hs_code
         
-        return None  # Will use default
+        return None
 
     def _generate_unique_code(self, shopify_order):
         """
@@ -233,11 +224,6 @@ class EHDMService:
                 "uniqueCode": unique_code
             }
             
-            # DEBUG: Print payload for verification
-            print("=== DEBUG EHDM Receipt Payload ===")
-            print(json.dumps(payload, indent=2, ensure_ascii=False))
-            print("=== END DEBUG ===")
-            
             # Make API call to generate receipt
             headers = {
                 'Authorization': f'Bearer {self.token}',
@@ -254,25 +240,21 @@ class EHDMService:
                 result = response.json()
                 print("✅ Fiscal receipt generated successfully!")
                 
-                # DEBUG: Print full response to see what we're getting
-                print("=== DEBUG EHDM API Response ===")
-                print(json.dumps(result, indent=2, ensure_ascii=False))
-                print("=== END DEBUG ===")
-                
                 # Extract receipt URL and ID from response
                 receipt_url = result.get('link')
                 receipt_id = result.get('receiptId')
+                history_id = result.get('historyId')  # CRITICAL: Store historyId for refunds
                 
                 if not receipt_url:
                     print("⚠️ No receipt URL found in API response")
-                    # Try to construct URL from pattern if not provided
                     if receipt_id:
                         receipt_url = f"https://store.payx.am/Receipt/2025/{EHDM_USERNAME}/productSale/10/13/{EHDM_USERNAME}_{receipt_id}_2009582.pdf"
                         print(f"🔄 Constructed receipt URL: {receipt_url}")
                 
-                # Store receipt data for future reference
+                # Store receipt data for future reference (INCLUDING historyId)
                 receipt_info = {
                     'receipt_id': receipt_id,
+                    'history_id': history_id,  # STORE THIS FOR REFUNDS
                     'unique_code': unique_code,
                     'link': receipt_url,
                     'response_data': result
@@ -280,12 +262,6 @@ class EHDMService:
                 
                 # Cache the receipt
                 self.receipts_processed[str(order_id)] = receipt_info
-                
-                # Send receipt via email to customer
-                if receipt_url:
-                    self._send_receipt_email_with_url(receipt_url, shopify_order)
-                else:
-                    print("⚠️ Cannot send email - no receipt URL available")
                 
                 return True, receipt_info, "Receipt generated successfully"
                 
@@ -299,33 +275,9 @@ class EHDMService:
             print(f"❌ {error_msg}")
             return False, None, error_msg
 
-    def _send_receipt_email_with_url(self, receipt_url, shopify_order):
-        """
-        Send receipt via email to customer using the receipt PDF URL
-        """
-        try:
-            customer_email = shopify_order.get('email') or shopify_order.get('contact_email')
-            if not customer_email:
-                print("⚠️ No customer email found for receipt sending")
-                return False
-            
-            # Since we can't use EHDM's email API without receiptId,
-            # we'll log the receipt URL for manual sending or implement custom email
-            print(f"📧 Receipt PDF URL for customer {customer_email}: {receipt_url}")
-            print(f"💡 Manually send this URL to customer or implement custom email service")
-            
-            # TODO: Implement custom email service to send receipt PDF
-            # For now, we log the URL and can manually email customers
-            
-            return True
-                
-        except Exception as e:
-            print(f"⚠️ Error preparing receipt email: {str(e)}")
-            return False
-
     def process_order_refund(self, shopify_order, refund_amount=None):
         """
-        Process refund/return for an order using EHDM Reverse API
+        FIXED: Process refund using correct EHDM Reverse API with historyId
         """
         try:
             order_id = shopify_order['id']
@@ -336,15 +288,12 @@ class EHDMService:
                 return False, "No receipt found for this order"
             
             receipt_data = self.receipts_processed[str(order_id)]
-            receipt_id = receipt_data.get('receipt_id')
             
-            if not receipt_id:
-                print(f"❌ No receipt ID found for order {order_id}")
-                return False, "No receipt ID available"
-            
-            # Use provided refund amount or full order amount
-            if refund_amount is None:
-                refund_amount = float(shopify_order.get('total_price', 0))
+            # We need historyId for the Reverse API (NOT receiptId)
+            history_id = receipt_data.get('history_id')
+            if not history_id:
+                print(f"❌ No historyId found for order {order_id}")
+                return False, "No historyId available for refund"
             
             headers = {
                 'Authorization': f'Bearer {self.token}',
@@ -352,26 +301,30 @@ class EHDMService:
                 'Accept': 'application/json'
             }
             
-            # For full refund, we use ReverseByReceiptId
+            # Use Reverse API with historyId for product returns
             refund_data = {
-                "receiptId": receipt_id
+                "historyId": history_id,
+                "products": self._prepare_refund_products(shopify_order),
+                "cashAmount": 0.0,  # Adjust based on original payment method
+                "cardAmount": float(shopify_order.get('total_price', 0)),
+                "prePaymentAmount": 0.0
             }
             
-            print(f"🔄 Processing refund for order {order_id}, amount: {refund_amount}")
-            response = requests.post(f"{self.base_url}/api/Hdm/ReverseByReceiptId", 
+            print(f"🔄 Processing refund for order {order_id}, historyId: {history_id}")
+            response = requests.post(f"{self.base_url}/api/Hdm/Reverse", 
                                    json=refund_data, 
                                    headers=headers)
             
             if response.status_code == 200:
                 result = response.json()
-                print("✅ Refund processed successfully in EHDM system!")
+                print("✅ Return receipt generated successfully in EHDM system!")
                 
-                # Extract refund receipt URL
-                refund_receipt_url = result.get('revercelink') or result.get('link')
-                if refund_receipt_url:
-                    print(f"📄 Refund receipt URL: {refund_receipt_url}")
+                # Extract return receipt URL
+                return_receipt_url = result.get('link')
+                if return_receipt_url:
+                    print(f"📄 Return receipt URL: {return_receipt_url}")
                 
-                return True, "Refund processed successfully"
+                return True, "Return receipt generated successfully"
             else:
                 error_msg = f"Refund API Error: {response.status_code} - {response.text}"
                 print(f"❌ {error_msg}")
@@ -382,18 +335,33 @@ class EHDMService:
             print(f"❌ {error_msg}")
             return False, error_msg
 
-    def _create_fulfillment_simple(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+    def _prepare_refund_products(self, shopify_order):
+        """Prepare products array for refund (return all items)"""
+        products = []
+        line_items = shopify_order.get('line_items', [])
+        
+        for index, item in enumerate(line_items):
+            quantity = int(item.get('quantity', 1))
+            products.append({
+                "receiptProductId": index,
+                "quantity": float(quantity)
+            })
+        
+        return products
+
+    def _create_fulfillment_with_tracking(self, order_id, tracking_number, shopify_headers, receipt_url=None):
         """
-        Simple fulfillment approach that should work with your API permissions
+        FIXED: Create fulfillment with tracking that auto-fills Shopify UI
         """
         try:
             tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
             
+            # CORRECT fulfillment payload structure
             fulfillment_data = {
                 "fulfillment": {
                     "location_id": self._get_primary_location_id(shopify_headers),
                     "tracking_number": str(tracking_number),
-                    "tracking_company": "TransImpex Express",
+                    "tracking_company": "Other",  # Changed to "Other" as requested
                     "tracking_urls": [tracking_url],
                     "notify_customer": True,
                     "line_items": self._get_fulfillable_line_items(order_id, shopify_headers)
@@ -408,7 +376,10 @@ class EHDMService:
             response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
 
             if response.status_code in [201, 200]:
-                print("✅ Simple fulfillment created successfully!")
+                fulfillment_response = response.json().get('fulfillment', {})
+                print("✅ Fulfillment created successfully with tracking!")
+                print(f"✅ Tracking number in Shopify: {fulfillment_response.get('tracking_number')}")
+                print(f"✅ Tracking company: {fulfillment_response.get('tracking_company')}")
                 
                 # Also add receipt URL to order notes for permanent record
                 if receipt_url:
@@ -416,12 +387,66 @@ class EHDMService:
                 
                 return True
             else:
-                print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
+                print(f"❌ Fulfillment failed: {response.status_code} - {response.text}")
+                # Try alternative approach
+                return self._create_fulfillment_alternative(order_id, tracking_number, shopify_headers, receipt_url)
+                
+        except Exception as e:
+            print(f"❌ Fulfillment error: {str(e)}")
+            return False
+
+    def _create_fulfillment_alternative(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """
+        Alternative fulfillment approach for when primary method fails
+        """
+        try:
+            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
+            
+            # Simpler payload without line_items
+            fulfillment_data = {
+                "fulfillment": {
+                    "tracking_number": str(tracking_number),
+                    "tracking_company": "Other",
+                    "tracking_urls": [tracking_url],
+                    "notify_customer": True
+                }
+            }
+
+            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
+            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+            if response.status_code in [201, 200]:
+                print("✅ Alternative fulfillment created successfully!")
+                
+                # Add receipt to order notes
+                if receipt_url:
+                    self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
+                
+                return True
+            else:
+                print(f"❌ Alternative fulfillment also failed: {response.status_code}")
                 return False
                 
         except Exception as e:
-            print(f"❌ Simple fulfillment error: {str(e)}")
+            print(f"❌ Alternative fulfillment error: {str(e)}")
             return False
+
+    def _get_primary_location_id(self, shopify_headers):
+        """
+        Get primary location ID for fulfillment
+        """
+        try:
+            locations_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/locations.json"
+            response = requests.get(locations_url, headers=shopify_headers)
+            
+            if response.status_code == 200:
+                locations = response.json().get('locations', [])
+                if locations:
+                    return locations[0]['id']
+        except Exception as e:
+            print(f"⚠️ Could not get location ID: {str(e)}")
+        
+        return None
 
     def _get_fulfillable_line_items(self, order_id, shopify_headers):
         """Get line items that need fulfillment"""
@@ -446,90 +471,17 @@ class EHDMService:
         
         return None
 
-    def _get_primary_location_id(self, shopify_headers):
-        """
-        Get primary location ID for fulfillment
-        """
-        try:
-            locations_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/locations.json"
-            response = requests.get(locations_url, headers=shopify_headers)
-            
-            if response.status_code == 200:
-                locations = response.json().get('locations', [])
-                if locations:
-                    return locations[0]['id']
-        except Exception as e:
-            print(f"⚠️ Could not get location ID: {str(e)}")
-        
-        return None
-
     def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
-        """Enhanced: Update Shopify with proper shipping links AND receipt URL"""
+        """FIXED: Update Shopify with tracking that auto-fills the fulfillment form"""
         print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
         
-        # Try simple fulfillment first (most reliable)
-        if self._create_fulfillment_simple(order_id, tracking_number, shopify_headers, receipt_url):
+        # Use the corrected fulfillment approach
+        if self._create_fulfillment_with_tracking(order_id, tracking_number, shopify_headers, receipt_url):
             self._mark_order_processed(order_id, shopify_headers)
             return True
         
-        # Fallback: Manual order update
-        print("🔄 Trying manual order update with tracking URL and receipt URL...")
-        return self._update_order_manually(order_id, tracking_number, shopify_headers, receipt_url)
-
-    def _update_order_manually(self, order_id, tracking_number, shopify_headers, receipt_url=None):
-        """
-        Manual order update as fallback - enhanced to auto-fill fulfillment
-        """
-        try:
-            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
-            
-            # Create fulfillment with all details
-            fulfillment_data = {
-                "fulfillment": {
-                    "tracking_number": str(tracking_number),
-                    "tracking_company": "TransImpex Express", 
-                    "tracking_urls": [tracking_url],
-                    "notify_customer": False,  # We'll notify after adding receipt
-                    "line_items": self._get_fulfillable_line_items(order_id, shopify_headers)
-                }
-            }
-
-            # Add receipt to fulfillment note if available
-            if receipt_url:
-                fulfillment_data["fulfillment"]["note"] = f"Fiscal Receipt: {receipt_url}"
-
-            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
-            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-            if response.status_code in [201, 200]:
-                fulfillment_id = response.json().get('fulfillment', {}).get('id')
-                print("✅ Fulfillment created with tracking details!")
-                
-                # Now update with receipt and notify customer
-                if receipt_url and fulfillment_id:
-                    update_data = {
-                        "fulfillment": {
-                            "id": fulfillment_id,
-                            "note": f"Fiscal Receipt: {receipt_url}",
-                            "notify_customer": True
-                        }
-                    }
-                    update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments/{fulfillment_id}.json"
-                    requests.put(update_url, json=update_data, headers=shopify_headers)
-                    print("✅ Receipt added to fulfillment and customer notified!")
-                
-                # Also add to order notes
-                if receipt_url:
-                    self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
-                
-                return True
-            else:
-                print(f"❌ Fulfillment creation failed: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Fulfillment error: {str(e)}")
-            return False
+        print("❌ All fulfillment methods failed")
+        return False
 
     def _update_order_with_receipt_url(self, order_id, receipt_url, shopify_headers):
         """Helper method to update order with receipt URL"""
@@ -554,6 +506,22 @@ class EHDMService:
         except Exception as e:
             print(f"⚠️ Error adding receipt URL: {str(e)}")
 
+    def _mark_order_processed(self, order_id, shopify_headers):
+        """Mark order as processed in Shopify"""
+        try:
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            update_tags_data = {
+                "order": {
+                    "id": order_id,
+                    "tags": "processed,fulfilled"
+                }
+            }
+            requests.put(order_url, json=update_tags_data, headers=shopify_headers)
+            print("✅ Order tagged as 'processed,fulfilled'")
+        except Exception as e:
+            print(f"⚠️ Could not update order tags: {str(e)}")
+
+    # ... [Keep all the existing customer data extraction methods unchanged] ...
     def extract_customer_data(self, shopify_order):
         """
         Extract customer data - ORDER DATA FIRST, customer data as fallback
@@ -565,13 +533,6 @@ class EHDMService:
         # SECONDARY: Customer object (fallback only)
         customer = shopify_order.get('customer', {})
         default_address = customer.get('default_address', {})
-        
-        print("=== DEBUG ORDER-BASED DATA EXTRACTION ===")
-        print(f"ORDER Shipping: {shipping_address}")
-        print(f"ORDER Billing: {billing_address}")
-        print(f"ORDER Email: {shopify_order.get('email')}")
-        print(f"ORDER Contact Email: {shopify_order.get('contact_email')}")
-        print(f"ORDER Phone: {shopify_order.get('phone')}")
         
         # PRIORITY 1: ORDER-LEVEL DATA (always use this first)
         name = self._extract_name_from_order(shipping_address, billing_address, shopify_order)
@@ -606,31 +567,27 @@ class EHDMService:
         }
         
         print(f"🎯 FINAL Customer Data: {customer_data}")
-        print("=== END DEBUG ===")
         
         return customer_data
 
     def _extract_name_from_order(self, shipping_address, billing_address, order):
         """Extract name from ORDER data first"""
-        # Try shipping address from order
         if shipping_address.get('first_name') or shipping_address.get('last_name'):
             first_name = shipping_address.get('first_name', '').strip()
             last_name = shipping_address.get('last_name', '').strip()
             if first_name or last_name:
                 return f"{first_name} {last_name}".strip()
         
-        # Try billing address from order
         if billing_address.get('first_name') or billing_address.get('last_name'):
             first_name = billing_address.get('first_name', '').strip()
             last_name = billing_address.get('last_name', '').strip()
             if first_name or last_name:
                 return f"{first_name} {last_name}".strip()
         
-        return ""  # Empty string to trigger fallback
+        return ""
 
     def _extract_address_from_order(self, shipping_address, billing_address):
         """Extract address from ORDER data first"""
-        # Try shipping address from order
         if shipping_address.get('address1'):
             address1 = shipping_address.get('address1', '').strip()
             address2 = shipping_address.get('address2', '').strip()
@@ -638,7 +595,6 @@ class EHDMService:
             if address:
                 return address
         
-        # Try billing address from order
         if billing_address.get('address1'):
             address1 = billing_address.get('address1', '').strip()
             address2 = billing_address.get('address2', '').strip()
@@ -646,7 +602,7 @@ class EHDMService:
             if address:
                 return address
         
-        return ""  # Empty string to trigger fallback
+        return ""
 
     def _extract_phone_from_order(self, shipping_address, billing_address):
         """Extract phone from ORDER data first"""
@@ -656,7 +612,7 @@ class EHDMService:
         if billing_address.get('phone'):
             return billing_address.get('phone', '').strip()
         
-        return ""  # Empty string to trigger fallback
+        return ""
 
     def _extract_name_from_customer(self, customer, default_address):
         """Extract name from customer data (fallback only)"""
@@ -697,19 +653,16 @@ class EHDMService:
 
     def _extract_city(self, shipping_address, billing_address, default_address):
         """Extract city with fallbacks"""
-        # Try shipping address first
         if shipping_address.get('city'):
             city = shipping_address.get('city', '').strip()
             if city:
                 return city
         
-        # Try billing address
         if billing_address.get('city'):
             city = billing_address.get('city', '').strip()
             if city:
                 return city
         
-        # Try default address
         if default_address.get('city'):
             city = default_address.get('city', '').strip()
             if city:
@@ -719,15 +672,12 @@ class EHDMService:
 
     def _extract_province(self, shipping_address, billing_address, default_address):
         """Extract province with fallbacks"""
-        # Try shipping address first
         if shipping_address.get('province'):
             return shipping_address.get('province')
         
-        # Try billing address
         if billing_address.get('province'):
             return billing_address.get('province')
         
-        # Try default address
         if default_address.get('province'):
             return default_address.get('province')
         
@@ -789,11 +739,6 @@ class EHDMService:
             "label": 0
         }
 
-        # DEBUG: Print the actual payload being sent
-        print("=== DEBUG Courier Payload ===")
-        print(json.dumps(courier_order_data, indent=2))
-        print("=== END DEBUG ===")
-
         # Make API call to create draft order
         courier_url = f"{COURIER_BASE_URL}/api/create-draft-order"
         response = requests.post(courier_url, json=courier_order_data, headers=self.courier_headers)
@@ -826,35 +771,6 @@ class EHDMService:
             print(f"❌ Courier API Error: {response.status_code} - {response.text}")
             return None
 
-    def update_shopify_tracking(self, order_id, tracking_number, shopify_headers):
-        """Add tracking number to Shopify order - MULTI-APPROACH"""
-        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
-
-        # Use simple fulfillment approach
-        success = self._create_fulfillment_simple(order_id, tracking_number, shopify_headers)
-        
-        if success:
-            self._mark_order_processed(order_id, shopify_headers)
-            return True
-        else:
-            # Fallback to manual update
-            return self._update_order_manually(order_id, tracking_number, shopify_headers)
-
-    def _mark_order_processed(self, order_id, shopify_headers):
-        """Mark order as processed in Shopify"""
-        try:
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            update_tags_data = {
-                "order": {
-                    "id": order_id,
-                    "tags": "processed,fulfilled"
-                }
-            }
-            requests.put(order_url, json=update_tags_data, headers=shopify_headers)
-            print("✅ Order tagged as 'processed,fulfilled'")
-        except Exception as e:
-            print(f"⚠️ Could not update order tags: {str(e)}")
-
     def map_region_to_province(self, region_name):
         """Map Shopify regions to courier province IDs"""
         province_mapping = {
@@ -863,6 +779,9 @@ class EHDMService:
             'Vayots Dzor': 10, 'Yerevan': 11
         }
         return province_mapping.get(region_name, 11)
+
+# ... [Keep the rest of the CourierAutomation class and Flask routes unchanged] ...
+# The CourierAutomation class and Flask routes remain the same as in the previous working version
 
 class CourierAutomation:
     def __init__(self):
@@ -873,12 +792,10 @@ class CourierAutomation:
 
     def is_order_already_processed(self, order_id):
         """Check if order was already processed by our system"""
-        # Check our local memory store first
         if order_id in processed_orders:
             print(f"📋 Order {order_id} found in processed orders cache")
             return True
         
-        # Check Shopify for existing TransImpex fulfillment
         try:
             order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
             response = requests.get(order_url, headers=self.shopify_headers)
@@ -886,15 +803,12 @@ class CourierAutomation:
             if response.status_code == 200:
                 shopify_order = response.json().get('order', {})
                 
-                # Check if order already has OUR fulfillment
                 for fulfillment in shopify_order.get('fulfillments', []):
-                    if fulfillment.get('tracking_company') == 'TransImpex Express':
+                    if fulfillment.get('tracking_company') == 'Other':
                         print(f"✅ Order {order_id} already processed by our system (found in Shopify)")
-                        # Cache this result
                         processed_orders[order_id] = True
                         return True
                 
-                # Check if order has our tracking tags
                 tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
                 if 'processed' in tags or 'shipped' in tags:
                     print(f"✅ Order {order_id} marked as processed in tags")
@@ -916,14 +830,11 @@ class CourierAutomation:
         print(f"🚀 PROCESSING ORDER {order_id}")
         
         try:
-            # Check if order was already processed
             if self.is_order_already_processed(order_id):
                 print(f"⏭️ Order {order_id} was already processed, skipping duplicate")
                 return True
             
-            # Get COMPLETE order details from Shopify API - NO FIELD FILTERING!
             order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            
             response = requests.get(order_url, headers=self.shopify_headers)
 
             if response.status_code != 200:
@@ -932,36 +843,20 @@ class CourierAutomation:
 
             shopify_order = response.json().get('order', {})
             
-            # DEBUG: Check what data we actually received
-            print("=== DEBUG FULL ORDER DATA ===")
-            print(f"Order #: {shopify_order.get('order_number')}")
-            print(f"Shipping Address: {shopify_order.get('shipping_address')}")
-            print(f"Billing Address: {shopify_order.get('billing_address')}")
-            print(f"Customer: {shopify_order.get('customer')}")
-            print(f"Email: {shopify_order.get('email')}")
-            print(f"Contact Email: {shopify_order.get('contact_email')}")
-            print("=== END DEBUG ===")
-            
-            # Process with EHDM service
             ehdm_service = EHDMService()
             
-            # Generate fiscal receipt with PayX first
             if ehdm_service.login():
                 print("✅ PayX login successful, ready for receipt generation")
-                # TODO: Add receipt generation logic here
             else:
                 print("❌ PayX login failed, but continuing with shipping")
             
-            # Create order with courier using REAL customer data
             tracking_number = ehdm_service.create_courier_order(shopify_order)
 
             if tracking_number:
-                # Update Shopify with tracking and fulfill
-                success = ehdm_service.update_shopify_tracking(order_id, tracking_number, self.shopify_headers)
+                success = ehdm_service.update_shopify_tracking_with_shipping_links(order_id, tracking_number, self.shopify_headers)
 
                 if success:
                     print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
-                    # Mark as processed to prevent duplicates
                     self.mark_order_as_processed(order_id)
                     return True
                 else:
@@ -981,44 +876,29 @@ class CourierAutomation:
         print(f"🚀 PROCESSING ORDER FROM WEBHOOK {order_id}")
         
         try:
-            # Check if order was already processed
             if self.is_order_already_processed(order_id):
                 print(f"⏭️ Order {order_id} was already processed, skipping duplicate")
                 return True
             
-            # DEBUG: Check the complete webhook data
-            print("=== DEBUG WEBHOOK DATA ===")
-            print(f"Order #: {shopify_order.get('order_number')}")
-            print(f"Shipping Address: {shopify_order.get('shipping_address')}")
-            print(f"Billing Address: {shopify_order.get('billing_address')}")
-            print(f"Email: {shopify_order.get('email')}")
-            print(f"Phone: {shopify_order.get('phone')}")
-            print("=== END DEBUG ===")
-            
-            # Process with EHDM service using webhook data
             ehdm_service = EHDMService()
             
-            # Generate fiscal receipt with PayX first - FIX: ADDED RECEIPT GENERATION
+            receipt_success = False
+            receipt_data = None
+            
             if ehdm_service.login():
                 print("✅ PayX login successful, generating fiscal receipt...")
-                
-                # GENERATE EHDM RECEIPT BEFORE COURIER ORDER
                 receipt_success, receipt_data, receipt_message = ehdm_service.generate_fiscal_receipt(shopify_order)
                 
                 if receipt_success:
                     print(f"✅ Fiscal receipt generated successfully! Receipt ID: {receipt_data.get('receipt_id')}")
                 else:
                     print(f"❌ Failed to generate fiscal receipt: {receipt_message}")
-                    # Continue with shipping even if receipt fails? Or stop processing?
-                    # For now, we'll continue but log the error
             else:
                 print("❌ PayX login failed, but continuing with shipping")
             
-            # Create order with courier using REAL customer data from webhook
             tracking_number = ehdm_service.create_courier_order(shopify_order)
             
             if tracking_number:
-                # Update Shopify with tracking and fulfill - ENHANCED: With shipping links AND receipt URL
                 receipt_url = receipt_data.get('link') if receipt_success else None
                 success = ehdm_service.update_shopify_tracking_with_shipping_links(
                     order_id, tracking_number, self.shopify_headers, receipt_url
@@ -1054,7 +934,6 @@ def handle_order_paid():
         order_id = shopify_order['id']
         order_number = shopify_order.get('order_number', 'Unknown')
 
-        # Webhook idempotency - prevent duplicate processing
         webhook_id = generate_webhook_id(shopify_order)
         if webhook_id in processed_webhooks:
             print(f"🔄 Duplicate webhook detected for order {order_number}, skipping")
@@ -1064,7 +943,6 @@ def handle_order_paid():
 
         print(f"Processing order #{order_number} (ID: {order_id})")
 
-        # Add "pending-confirmation" tag to the order
         automation = CourierAutomation()
         update_data = {
             "order": {
@@ -1105,7 +983,6 @@ def handle_order_updated():
         order_id = shopify_order['id']
         order_number = shopify_order.get('order_number', 'Unknown')
 
-        # Webhook idempotency
         webhook_id = generate_webhook_id(shopify_order)
         if webhook_id in processed_webhooks:
             print(f"🔄 Duplicate webhook detected for order {order_number}, skipping")
@@ -1115,14 +992,12 @@ def handle_order_updated():
 
         print(f"🔄 Order #{order_number} updated, checking tags...")
 
-        # Check if order has "confirmed" tag
         tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
         print(f"🏷️ Current tags: {tags}")
 
         if 'confirmed' in tags:
             print(f"🎉 Order {order_number} has 'confirmed' tag! Processing immediately...")
             
-            # Process using webhook data directly
             automation = CourierAutomation()
             success = automation.process_order_from_webhook(shopify_order)
             
@@ -1145,7 +1020,7 @@ def handle_order_updated():
 
 @app.route('/webhook/order-cancelled', methods=['POST'])
 def handle_order_cancelled():
-    """Webhook for order cancellations to process EHDM refunds"""
+    """FIXED: Webhook for order cancellations to process EHDM refunds with correct API"""
     print("🔄 Received order cancelled webhook")
     
     try:
@@ -1153,7 +1028,6 @@ def handle_order_cancelled():
         order_id = shopify_order['id']
         order_number = shopify_order.get('order_number', 'Unknown')
 
-        # Webhook idempotency
         webhook_id = generate_webhook_id(shopify_order)
         if webhook_id in processed_webhooks:
             print(f"🔄 Duplicate cancellation webhook detected for order {order_number}, skipping")
@@ -1163,14 +1037,12 @@ def handle_order_cancelled():
 
         print(f"🔄 Processing refund for cancelled order #{order_number} (ID: {order_id})")
 
-        # Process refund with EHDM
         ehdm_service = EHDMService()
         if ehdm_service.login():
             success, message = ehdm_service.process_order_refund(shopify_order)
             if success:
-                print(f"✅ Refund receipt generated for order {order_number}")
+                print(f"✅ Return receipt generated for order {order_number}")
                 
-                # Update Shopify order with refund status
                 automation = CourierAutomation()
                 update_data = {
                     "order": {
@@ -1217,7 +1089,6 @@ def refund_order_manual(order_id):
     print(f"🔄 Manual refund requested for order {order_id}")
     
     try:
-        # Get order details from Shopify
         shopify_headers = {
             'Content-Type': 'application/json',
             'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN
@@ -1230,7 +1101,6 @@ def refund_order_manual(order_id):
 
         shopify_order = response.json().get('order', {})
         
-        # Process refund with EHDM
         ehdm_service = EHDMService()
         if ehdm_service.login():
             success, message = ehdm_service.process_order_refund(shopify_order)
@@ -1261,8 +1131,8 @@ def home():
     - ✅ DUPLICATE DETECTION: Prevents re-processing same orders<br>
     - ✅ BARCODE RETRY: Auto-retry with new IDs on conflicts<br>
     - ✅ COMPLETE ORDER DATA: Fetches full customer details from API<br>
-    - ✅ MODERN FULFILLMENT: Uses FulfillmentOrder API<br>
-    - ✅ AUTOMATIC REFUNDS: EHDM refund receipts for cancelled orders<br><br>
+    - ✅ FIXED FULFILLMENT: Auto-fills tracking on Shopify fulfillment<br>
+    - ✅ FIXED REFUNDS: Correct EHDM return receipt generation<br><br>
     
     <strong>Setup Required:</strong><br>
     1. Add Shopify webhook: orders/updated → /webhook/order-updated<br>
