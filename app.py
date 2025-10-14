@@ -4,6 +4,8 @@ import json
 import os
 import time
 import hashlib
+import random
+import string
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -63,6 +65,80 @@ class EHDMService:
             print(f"❌ PayX login error: {str(e)}")
         
         return False
+
+    def _prepare_receipt_data(self, shopify_order):
+        """
+        Prepare receipt data for EHDM API from Shopify order
+        Returns: dict with products, amounts, and receipt details
+        """
+        try:
+            line_items = shopify_order.get('line_items', [])
+            products = []
+            total_amount = 0
+            
+            for item in line_items:
+                quantity = int(item.get('quantity', 1))
+                price = float(item.get('price', 0))
+                total_price = price * quantity
+                total_amount += total_price
+                
+                product_data = {
+                    "name": item.get('name', 'Product')[:100],
+                    "price": int(total_price * 100),  # Convert to cents
+                    "quantity": quantity,
+                    "measure": "piece",
+                    "line": len(products) + 1
+                }
+                products.append(product_data)
+            
+            # If no products found, create a default product
+            if not products:
+                total_amount = float(shopify_order.get('total_price', 0))
+                products = [{
+                    "name": "Online Order Items",
+                    "price": int(total_amount * 100),
+                    "quantity": 1,
+                    "measure": "piece",
+                    "line": 1
+                }]
+            
+            # Determine payment method (cash vs card)
+            payment_gateway = shopify_order.get('gateway', '').lower()
+            if 'cash' in payment_gateway:
+                cash_amount = int(total_amount * 100)
+                card_amount = 0
+            else:
+                cash_amount = 0
+                card_amount = int(total_amount * 100)
+            
+            receipt_data = {
+                "products": products,
+                "additionalDiscount": 0,
+                "additionalDiscountType": 0,
+                "cashAmount": cash_amount,
+                "cardAmount": card_amount,
+                "partialAmount": 0,
+                "prePaymentAmount": 0,
+                "partnerTin": "0"
+            }
+            
+            print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
+            return receipt_data
+            
+        except Exception as e:
+            print(f"❌ Error preparing receipt data: {str(e)}")
+            return None
+
+    def _generate_unique_code(self, shopify_order):
+        """
+        Generate unique code for EHDM receipt (max 30 chars)
+        Format: SHOP{order_id}_{random_chars}
+        """
+        order_id = str(shopify_order['id'])
+        random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        unique_code = f"SHOP{order_id}_{random_chars}"[:30]
+        print(f"🔑 Generated unique code: {unique_code}")
+        return unique_code
 
     def generate_fiscal_receipt(self, shopify_order):
         """
@@ -246,97 +322,19 @@ class EHDMService:
             print(f"❌ {error_msg}")
             return False, error_msg
 
-    def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
-        """Enhanced: Update Shopify with proper shipping links AND receipt URL"""
-        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
-        
-        # Construct proper tracking URL
-        tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
-        
-        # Prepare note attributes with both tracking AND receipt URL
-        note_attributes = [
-            {
-                "name": "tracking_number",
-                "value": str(tracking_number)
-            },
-            {
-                "name": "tracking_url", 
-                "value": tracking_url
-            },
-            {
-                "name": "courier",
-                "value": "TransImpex Express"
-            }
-        ]
-        
-        # Add receipt URL if provided
-        if receipt_url:
-            note_attributes.append({
-                "name": "fiscal_receipt_url",
-                "value": receipt_url
-            })
-            print(f"📄 Adding fiscal receipt URL to order: {receipt_url}")
-        
-        # APPROACH 1: Try FulfillmentOrder API with tracking URL
+    def _create_fulfillment_simple(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """
+        Simple fulfillment approach that should work with your API permissions
+        """
         try:
-            fulfillment_orders_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
-            fulfillment_response = requests.get(fulfillment_orders_url, headers=shopify_headers)
+            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
             
-            if fulfillment_response.status_code == 200:
-                fulfillment_orders = fulfillment_response.json().get('fulfillment_orders', [])
-                
-                if fulfillment_orders:
-                    print("✅ Fulfillment orders found, using modern API with tracking URL")
-                    for fulfillment_order in fulfillment_orders:
-                        fulfillment_order_id = fulfillment_order['id']
-                        line_items = []
-                        
-                        for line_item in fulfillment_order['line_items']:
-                            line_items.append({
-                                "id": line_item['id'],
-                                "quantity": line_item['fulfillable_quantity']
-                            })
-                        
-                        fulfillment_data = {
-                            "fulfillment": {
-                                "line_items_by_fulfillment_order": [
-                                    {
-                                        "fulfillment_order_id": fulfillment_order_id,
-                                        "fulfillment_order_line_items": line_items
-                                    }
-                                ],
-                                "tracking_info": {
-                                    "number": str(tracking_number),
-                                    "company": "TransImpex Express",
-                                    "url": tracking_url
-                                },
-                                "notify_customer": True
-                            }
-                        }
-
-                        fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
-                        response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-                        if response.status_code in [201, 200]:
-                            print("✅ Fulfillment created successfully with tracking URL!")
-                            # Also update order with receipt URL if available
-                            if receipt_url:
-                                self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
-                            self._mark_order_processed(order_id, shopify_headers)
-                            return True
-                        else:
-                            print(f"❌ Fulfillment failed: {response.status_code}")
-        except Exception as e:
-            print(f"⚠️ FulfillmentOrder API failed: {str(e)}")
-
-        # APPROACH 2: Simple fulfillment with tracking URL (fallback)
-        print("🔄 Trying simple fulfillment approach with tracking URL...")
-        try:
             fulfillment_data = {
                 "fulfillment": {
+                    "location_id": self._get_primary_location_id(shopify_headers),
                     "tracking_number": str(tracking_number),
                     "tracking_company": "TransImpex Express",
-                    "tracking_url": tracking_url,
+                    "tracking_urls": [tracking_url],
                     "notify_customer": True
                 }
             }
@@ -345,25 +343,87 @@ class EHDMService:
             response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
 
             if response.status_code in [201, 200]:
-                print("✅ Simple fulfillment created successfully with tracking URL!")
-                # Also update order with receipt URL if available
+                print("✅ Simple fulfillment created successfully!")
+                
+                # Add receipt URL to order notes if available
                 if receipt_url:
                     self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
+                
                 return True
             else:
                 print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
+                return False
+                
         except Exception as e:
             print(f"❌ Simple fulfillment error: {str(e)}")
+            return False
 
-        # APPROACH 3: Manual order update with tracking info AND receipt URL (last resort)
-        print("🔄 Trying manual order update with tracking URL and receipt URL...")
+    def _get_primary_location_id(self, shopify_headers):
+        """
+        Get primary location ID for fulfillment
+        """
         try:
+            locations_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/locations.json"
+            response = requests.get(locations_url, headers=shopify_headers)
+            
+            if response.status_code == 200:
+                locations = response.json().get('locations', [])
+                if locations:
+                    return locations[0]['id']
+        except Exception as e:
+            print(f"⚠️ Could not get location ID: {str(e)}")
+        
+        return None
+
+    def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """Enhanced: Update Shopify with proper shipping links AND receipt URL"""
+        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
+        
+        # Try simple fulfillment first (most reliable)
+        if self._create_fulfillment_simple(order_id, tracking_number, shopify_headers, receipt_url):
+            self._mark_order_processed(order_id, shopify_headers)
+            return True
+        
+        # Fallback: Manual order update
+        print("🔄 Trying manual order update with tracking URL and receipt URL...")
+        return self._update_order_manually(order_id, tracking_number, shopify_headers, receipt_url)
+
+    def _update_order_manually(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """
+        Manual order update as fallback
+        """
+        try:
+            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
+            
+            note_attributes = [
+                {
+                    "name": "tracking_number",
+                    "value": str(tracking_number)
+                },
+                {
+                    "name": "tracking_url", 
+                    "value": tracking_url
+                },
+                {
+                    "name": "courier",
+                    "value": "TransImpex Express"
+                }
+            ]
+            
+            # Add receipt URL if provided
+            if receipt_url:
+                note_attributes.append({
+                    "name": "fiscal_receipt_url",
+                    "value": receipt_url
+                })
+                print(f"📄 Adding fiscal receipt URL to order: {receipt_url}")
+            
             order_update_data = {
                 "order": {
                     "id": order_id,
                     "fulfillment_status": "fulfilled",
                     "tags": "processed,fulfilled",
-                    "note_attributes": note_attributes  # Includes both tracking AND receipt URL
+                    "note_attributes": note_attributes
                 }
             }
             
@@ -374,7 +434,7 @@ class EHDMService:
                 print("✅ Order manually updated with tracking URL and receipt URL!")
                 return True
             else:
-                print(f"❌ Manual update failed: {response.status_code}")
+                print(f"❌ Manual update failed: {response.status_code} - {response.text}")
                 return False
         except Exception as e:
             print(f"❌ Manual update error: {str(e)}")
@@ -679,125 +739,15 @@ class EHDMService:
         """Add tracking number to Shopify order - MULTI-APPROACH"""
         print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
 
-        # APPROACH 1: Try FulfillmentOrder API (modern approach)
-        try:
-            fulfillment_orders_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillment_orders.json"
-            fulfillment_response = requests.get(fulfillment_orders_url, headers=shopify_headers)
-            
-            if fulfillment_response.status_code == 200:
-                fulfillment_orders = fulfillment_response.json().get('fulfillment_orders', [])
-                
-                if fulfillment_orders:
-                    print("✅ Fulfillment orders found, using modern API")
-                    for fulfillment_order in fulfillment_orders:
-                        fulfillment_order_id = fulfillment_order['id']
-                        line_items = []
-                        
-                        for line_item in fulfillment_order['line_items']:
-                            line_items.append({
-                                "id": line_item['id'],
-                                "quantity": line_item['fulfillable_quantity']
-                            })
-                        
-                        fulfillment_data = {
-                            "fulfillment": {
-                                "line_items_by_fulfillment_order": [
-                                    {
-                                        "fulfillment_order_id": fulfillment_order_id,
-                                        "fulfillment_order_line_items": line_items
-                                    }
-                                ],
-                                "tracking_info": {
-                                    "number": str(tracking_number),
-                                    "company": "TransImpex Express",
-                                    "url": f"https://transimpexexpress.am/tracking/{tracking_number}"
-                                },
-                                "notify_customer": True
-                            }
-                        }
-
-                        fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments.json"
-                        response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-                        if response.status_code in [201, 200]:
-                            print("✅ Fulfillment created successfully!")
-                            self._mark_order_processed(order_id, shopify_headers)
-                            return True
-                        else:
-                            print(f"❌ Fulfillment failed: {response.status_code}")
-        except Exception as e:
-            print(f"⚠️ FulfillmentOrder API failed: {str(e)}")
-
-        # APPROACH 2: Simple fulfillment (fallback)
-        print("🔄 Trying simple fulfillment approach...")
-        try:
-            fulfillment_data = {
-                "fulfillment": {
-                    "tracking_number": str(tracking_number),
-                    "tracking_company": "TransImpex Express",
-                    "notify_customer": False
-                }
-            }
-
-            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
-            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-            if response.status_code in [201, 200]:
-                print("✅ Simple fulfillment created successfully!")
-                
-                # Try to add tracking URL
-                fulfillment_id = response.json().get('fulfillment', {}).get('id')
-                if fulfillment_id:
-                    update_data = {
-                        "fulfillment": {
-                            "id": fulfillment_id,
-                            "tracking_url": f"https://transimpexexpress.am/tracking/{tracking_number}",
-                            "notify_customer": True
-                        }
-                    }
-                    update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/fulfillments/{fulfillment_id}.json"
-                    requests.put(update_url, json=update_data, headers=shopify_headers)
-                
-                self._mark_order_processed(order_id, shopify_headers)
-                return True
-            else:
-                print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
-        except Exception as e:
-            print(f"❌ Simple fulfillment error: {str(e)}")
-
-        # APPROACH 3: Manual order update (last resort)
-        print("🔄 Trying manual order update...")
-        try:
-            order_update_data = {
-                "order": {
-                    "id": order_id,
-                    "fulfillment_status": "fulfilled",
-                    "tags": "processed,fulfilled",
-                    "note_attributes": [
-                        {
-                            "name": "tracking_number",
-                            "value": str(tracking_number)
-                        },
-                        {
-                            "name": "courier", 
-                            "value": "TransImpex Express"
-                        }
-                    ]
-                }
-            }
-            
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
-            
-            if response.status_code == 200:
-                print("✅ Order manually updated with fulfillment details!")
-                return True
-            else:
-                print(f"❌ Manual update failed: {response.status_code}")
-                return False
-        except Exception as e:
-            print(f"❌ Manual update error: {str(e)}")
-            return False
+        # Use simple fulfillment approach
+        success = self._create_fulfillment_simple(order_id, tracking_number, shopify_headers)
+        
+        if success:
+            self._mark_order_processed(order_id, shopify_headers)
+            return True
+        else:
+            # Fallback to manual update
+            return self._update_order_manually(order_id, tracking_number, shopify_headers)
 
     def _mark_order_processed(self, order_id, shopify_headers):
         """Mark order as processed in Shopify"""
