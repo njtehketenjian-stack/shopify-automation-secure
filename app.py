@@ -66,121 +66,121 @@ class EHDMService:
         
         return False
 
-def _prepare_receipt_data(self, shopify_order):
-    """
-    Prepare receipt data for EHDM API from Shopify order
-    Returns: dict with products, amounts, and receipt details
-    """
-    try:
-        line_items = shopify_order.get('line_items', [])
-        products = []
-        total_amount = 0
-        
-        for index, item in enumerate(line_items):
-            quantity = int(item.get('quantity', 1))
-            price = float(item.get('price', 0))
-            total_price = price * quantity
-            total_amount += total_price
+    def _prepare_receipt_data(self, shopify_order):
+        """
+        Prepare receipt data for EHDM API from Shopify order
+        Returns: dict with products, amounts, and receipt details
+        """
+        try:
+            line_items = shopify_order.get('line_items', [])
+            products = []
+            total_amount = 0
             
-            # Extract product data
-            sku = item.get('sku', '')
-            product_name = item.get('name', 'Product')[:50]  # Max 50 chars for EHDM
+            for index, item in enumerate(line_items):
+                quantity = int(item.get('quantity', 1))
+                price = float(item.get('price', 0))
+                total_price = price * quantity
+                total_amount += total_price
+                
+                # Extract product data
+                sku = item.get('sku', '')
+                product_name = item.get('name', 'Product')[:50]  # Max 50 chars for EHDM
+                
+                # Generate product codes based on available data
+                if sku:
+                    good_code = sku[:20]  # Use SKU as goodCode if available
+                    # Try to extract HS code from SKU or use default
+                    adg_code = self._extract_hs_code(sku) or "8471"  # Default: Automatic data processing machines
+                else:
+                    # Default codes for products without SKU
+                    good_code = f"SHOP{index+1:03d}"
+                    adg_code = "8471"  # Default HS code for general goods
+                
+                product_data = {
+                    # REQUIRED FIELDS FOR EHDM API:
+                    "adgCode": adg_code,  # HS Code (Harmonized System)
+                    "goodCode": good_code,  # Internal code / Barcode
+                    "goodName": product_name,  # Product name (max 50 chars)
+                    "quantity": float(quantity),  # Must be double type
+                    "unit": "piece",  # Unit of measurement
+                    "price": round(float(total_price), 2),  # Price with max 2 decimal places
+                    "discount": 0,  # Product discount amount
+                    "discountType": 0,  # 0 = no discount, 1 = percentage, 2 = fixed amount
+                    "receiptProductId": index,  # Product index (starts from 0)
+                    "dep": 1  # Taxation department: 1 = VAT taxable
+                }
+                products.append(product_data)
             
-            # Generate product codes based on available data
-            if sku:
-                good_code = sku[:20]  # Use SKU as goodCode if available
-                # Try to extract HS code from SKU or use default
-                adg_code = self._extract_hs_code(sku) or "8471"  # Default: Automatic data processing machines
+            # If no products, add a default item with required fields
+            if not products:
+                total_amount = float(shopify_order.get('total_price', 0))
+                products = [{
+                    "adgCode": "8471",  # Default HS code
+                    "goodCode": "ONLINE001",
+                    "goodName": "Online Order Items",
+                    "quantity": 1.0,
+                    "unit": "piece", 
+                    "price": round(float(total_amount), 2),
+                    "discount": 0,
+                    "discountType": 0,
+                    "receiptProductId": 0,
+                    "dep": 1  # VAT taxable
+                }]
+            
+            # Determine payment method (cash vs card)
+            payment_gateway = shopify_order.get('gateway', '').lower()
+            if 'cash' in payment_gateway:
+                cash_amount = round(float(total_amount), 2)
+                card_amount = 0.0
             else:
-                # Default codes for products without SKU
-                good_code = f"SHOP{index+1:03d}"
-                adg_code = "8471"  # Default HS code for general goods
+                cash_amount = 0.0
+                card_amount = round(float(total_amount), 2)
             
-            product_data = {
-                # REQUIRED FIELDS FOR EHDM API:
-                "adgCode": adg_code,  # HS Code (Harmonized System)
-                "goodCode": good_code,  # Internal code / Barcode
-                "goodName": product_name,  # Product name (max 50 chars)
-                "quantity": float(quantity),  # Must be double type
-                "unit": "piece",  # Unit of measurement
-                "price": round(float(total_price), 2),  # Price with max 2 decimal places
-                "discount": 0,  # Product discount amount
-                "discountType": 0,  # 0 = no discount, 1 = percentage, 2 = fixed amount
-                "receiptProductId": index,  # Product index (starts from 0)
-                "dep": 1  # Taxation department: 1 = VAT taxable
+            receipt_data = {
+                "products": products,
+                "additionalDiscount": 0,
+                "additionalDiscountType": 0,
+                "cashAmount": cash_amount,
+                "cardAmount": card_amount,
+                "partialAmount": 0,
+                "prePaymentAmount": 0,
+                "partnerTin": "0"  # Use "0" when no TIN available
             }
-            products.append(product_data)
-        
-        # If no products, add a default item with required fields
-        if not products:
-            total_amount = float(shopify_order.get('total_price', 0))
-            products = [{
-                "adgCode": "8471",  # Default HS code
-                "goodCode": "ONLINE001",
-                "goodName": "Online Order Items",
-                "quantity": 1.0,
-                "unit": "piece", 
-                "price": round(float(total_amount), 2),
-                "discount": 0,
-                "discountType": 0,
-                "receiptProductId": 0,
-                "dep": 1  # VAT taxable
-            }]
-        
-        # Determine payment method (cash vs card)
-        payment_gateway = shopify_order.get('gateway', '').lower()
-        if 'cash' in payment_gateway:
-            cash_amount = round(float(total_amount), 2)
-            card_amount = 0.0
-        else:
-            cash_amount = 0.0
-            card_amount = round(float(total_amount), 2)
-        
-        receipt_data = {
-            "products": products,
-            "additionalDiscount": 0,
-            "additionalDiscountType": 0,
-            "cashAmount": cash_amount,
-            "cardAmount": card_amount,
-            "partialAmount": 0,
-            "prePaymentAmount": 0,
-            "partnerTin": "0"  # Use "0" when no TIN available
+            
+            print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
+            
+            # DEBUG: Print product structure
+            print("=== DEBUG EHDM PRODUCT STRUCTURE ===")
+            for product in products:
+                print(f"Product: {product}")
+            print("=== END DEBUG ===")
+            
+            return receipt_data
+            
+        except Exception as e:
+            print(f"❌ Error preparing receipt data: {str(e)}")
+            return None
+
+    def _extract_hs_code(self, sku):
+        """
+        Extract HS code from SKU if possible, or use category mapping
+        You can customize this based on your product categories
+        """
+        # Example mapping - customize based on your products
+        category_mapping = {
+            'CLOTH': '6109',  # T-shirts
+            'ELEC': '8517',   # Telephones
+            'FOOD': '1905',   # Bread, pastry
+            'BOOK': '4901',   # Books
+            'BEAUTY': '3304', # Beauty products
         }
         
-        print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
+        # Check if SKU contains category codes
+        for category, hs_code in category_mapping.items():
+            if category in sku.upper():
+                return hs_code
         
-        # DEBUG: Print product structure
-        print("=== DEBUG EHDM PRODUCT STRUCTURE ===")
-        for product in products:
-            print(f"Product: {product}")
-        print("=== END DEBUG ===")
-        
-        return receipt_data
-        
-    except Exception as e:
-        print(f"❌ Error preparing receipt data: {str(e)}")
-        return None
-
-def _extract_hs_code(self, sku):
-    """
-    Extract HS code from SKU if possible, or use category mapping
-    You can customize this based on your product categories
-    """
-    # Example mapping - customize based on your products
-    category_mapping = {
-        'CLOTH': '6109',  # T-shirts
-        'ELEC': '8517',   # Telephones
-        'FOOD': '1905',   # Bread, pastry
-        'BOOK': '4901',   # Books
-        'BEAUTY': '3304', # Beauty products
-    }
-    
-    # Check if SKU contains category codes
-    for category, hs_code in category_mapping.items():
-        if category in sku.upper():
-            return hs_code
-    
-    return None  # Will use default
+        return None  # Will use default
 
     def _generate_unique_code(self, shopify_order):
         """
@@ -323,198 +323,7 @@ def _extract_hs_code(self, sku):
             print(f"⚠️ Error preparing receipt email: {str(e)}")
             return False
 
-    def process_order_refund(self, shopify_order, refund_amount=None):
-        """
-        Process refund/return for an order using EHDM Reverse API
-        """
-        try:
-            order_id = shopify_order['id']
-            
-            # Check if we have receipt data for this order
-            if str(order_id) not in self.receipts_processed:
-                print(f"❌ No receipt found for order {order_id}, cannot process refund")
-                return False, "No receipt found for this order"
-            
-            receipt_data = self.receipts_processed[str(order_id)]
-            receipt_id = receipt_data.get('receipt_id')
-            
-            if not receipt_id:
-                print(f"❌ No receipt ID found for order {order_id}")
-                return False, "No receipt ID available"
-            
-            # Use provided refund amount or full order amount
-            if refund_amount is None:
-                refund_amount = float(shopify_order.get('total_price', 0))
-            
-            headers = {
-                'Authorization': f'Bearer {self.token}',
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
-            
-            # For full refund, we use ReverseByReceiptId
-            refund_data = {
-                "receiptId": receipt_id
-            }
-            
-            print(f"🔄 Processing refund for order {order_id}, amount: {refund_amount}")
-            response = requests.post(f"{self.base_url}/api/Hdm/ReverseByReceiptId", 
-                                   json=refund_data, 
-                                   headers=headers)
-            
-            if response.status_code == 200:
-                print("✅ Refund processed successfully in EHDM system!")
-                return True, "Refund processed successfully"
-            else:
-                error_msg = f"Refund API Error: {response.status_code} - {response.text}"
-                print(f"❌ {error_msg}")
-                return False, error_msg
-                
-        except Exception as e:
-            error_msg = f"Refund processing error: {str(e)}"
-            print(f"❌ {error_msg}")
-            return False, error_msg
-
-    def _create_fulfillment_simple(self, order_id, tracking_number, shopify_headers, receipt_url=None):
-        """
-        Simple fulfillment approach that should work with your API permissions
-        """
-        try:
-            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
-            
-            fulfillment_data = {
-                "fulfillment": {
-                    "location_id": self._get_primary_location_id(shopify_headers),
-                    "tracking_number": str(tracking_number),
-                    "tracking_company": "TransImpex Express",
-                    "tracking_urls": [tracking_url],
-                    "notify_customer": True
-                }
-            }
-
-            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
-            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
-
-            if response.status_code in [201, 200]:
-                print("✅ Simple fulfillment created successfully!")
-                
-                # Add receipt URL to order notes if available
-                if receipt_url:
-                    self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
-                
-                return True
-            else:
-                print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Simple fulfillment error: {str(e)}")
-            return False
-
-    def _get_primary_location_id(self, shopify_headers):
-        """
-        Get primary location ID for fulfillment
-        """
-        try:
-            locations_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/locations.json"
-            response = requests.get(locations_url, headers=shopify_headers)
-            
-            if response.status_code == 200:
-                locations = response.json().get('locations', [])
-                if locations:
-                    return locations[0]['id']
-        except Exception as e:
-            print(f"⚠️ Could not get location ID: {str(e)}")
-        
-        return None
-
-    def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
-        """Enhanced: Update Shopify with proper shipping links AND receipt URL"""
-        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
-        
-        # Try simple fulfillment first (most reliable)
-        if self._create_fulfillment_simple(order_id, tracking_number, shopify_headers, receipt_url):
-            self._mark_order_processed(order_id, shopify_headers)
-            return True
-        
-        # Fallback: Manual order update
-        print("🔄 Trying manual order update with tracking URL and receipt URL...")
-        return self._update_order_manually(order_id, tracking_number, shopify_headers, receipt_url)
-
-    def _update_order_manually(self, order_id, tracking_number, shopify_headers, receipt_url=None):
-        """
-        Manual order update as fallback
-        """
-        try:
-            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
-            
-            note_attributes = [
-                {
-                    "name": "tracking_number",
-                    "value": str(tracking_number)
-                },
-                {
-                    "name": "tracking_url", 
-                    "value": tracking_url
-                },
-                {
-                    "name": "courier",
-                    "value": "TransImpex Express"
-                }
-            ]
-            
-            # Add receipt URL if provided
-            if receipt_url:
-                note_attributes.append({
-                    "name": "fiscal_receipt_url",
-                    "value": receipt_url
-                })
-                print(f"📄 Adding fiscal receipt URL to order: {receipt_url}")
-            
-            order_update_data = {
-                "order": {
-                    "id": order_id,
-                    "fulfillment_status": "fulfilled",
-                    "tags": "processed,fulfilled",
-                    "note_attributes": note_attributes
-                }
-            }
-            
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
-            
-            if response.status_code == 200:
-                print("✅ Order manually updated with tracking URL and receipt URL!")
-                return True
-            else:
-                print(f"❌ Manual update failed: {response.status_code} - {response.text}")
-                return False
-        except Exception as e:
-            print(f"❌ Manual update error: {str(e)}")
-            return False
-
-    def _update_order_with_receipt_url(self, order_id, receipt_url, shopify_headers):
-        """Helper method to update order with receipt URL"""
-        try:
-            update_data = {
-                "order": {
-                    "id": order_id,
-                    "note_attributes": [
-                        {
-                            "name": "fiscal_receipt_url",
-                            "value": receipt_url
-                        }
-                    ]
-                }
-            }
-            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
-            response = requests.put(order_url, json=update_data, headers=shopify_headers)
-            if response.status_code == 200:
-                print("✅ Receipt URL added to order notes!")
-            else:
-                print(f"⚠️ Could not add receipt URL to order: {response.status_code}")
-        except Exception as e:
-            print(f"⚠️ Error adding receipt URL: {str(e)}")
+    # ... keep all the other existing methods (extract_customer_data, create_courier_order, etc.)
 
     def extract_customer_data(self, shopify_order):
         """
