@@ -109,6 +109,19 @@ class EHDMService:
         except Exception as e:
             print(f"❌ Error getting historyId: {str(e)}")
             return None
+
+    def debug_refund_status(self, order_id):
+        """Check if we can process refund for this order"""
+        if str(order_id) in self.receipts_processed:
+            receipt_data = self.receipts_processed[str(order_id)]
+            print(f"🔍 REFUND DEBUG for order {order_id}:")
+            print(f"   - Receipt ID: {receipt_data.get('receipt_id')}")
+            print(f"   - History ID: {receipt_data.get('history_id')}")
+            print(f"   - Has receipt data: ✅ YES")
+            return True
+        else:
+            print(f"🔍 REFUND DEBUG for order {order_id}: ❌ NO RECEIPT DATA")
+            return False
     
     def login(self):
         """Get JWT token from E-HDM API"""
