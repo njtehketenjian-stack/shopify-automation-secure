@@ -871,7 +871,7 @@ class CourierAutomation:
             
 def generate_webhook_id(webhook_data):
     """Generate unique ID for webhook to prevent duplicates"""
-    webhook_str = json.dumps(webify_data, sort_keys=True)
+    webhook_str = json.dumps(webhook_data, sort_keys=True)
     return hashlib.md5(webhook_str.encode()).hexdigest()
 
 @app.route('/webhook/order-paid', methods=['POST'])
