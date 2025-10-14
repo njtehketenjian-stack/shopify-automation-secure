@@ -978,12 +978,12 @@ class CourierAutomation:
             
             if tracking_number:
                 # Update Shopify with tracking and fulfill - ENHANCED: With shipping links AND receipt URL
-               receipt_url = receipt_data.get('link') if receipt_success else None
-               success = ehdm_service.update_shopify_tracking_with_shipping_links(
-                   order_id, tracking_number, self.shopify_headers, receipt_url
-               )
+                receipt_url = receipt_data.get('link') if receipt_success else None
+                success = ehdm_service.update_shopify_tracking_with_shipping_links(
+                    order_id, tracking_number, self.shopify_headers, receipt_url
+                )
                 
-            if success:
+                if success:
                     print(f"✅ Order {order_id} fully processed! Tracking: {tracking_number}")
                     self.mark_order_as_processed(order_id)
                     return True
@@ -997,7 +997,7 @@ class CourierAutomation:
         except Exception as e:
             print(f"💥 ERROR processing order {order_id}: {str(e)}")
             return False
-
+            
 def generate_webhook_id(webhook_data):
     """Generate unique ID for webhook to prevent duplicates"""
     webhook_str = json.dumps(webhook_data, sort_keys=True)
