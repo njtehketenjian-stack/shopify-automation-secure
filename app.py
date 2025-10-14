@@ -65,6 +65,18 @@ class EHDMService:
         """Save receipts to persistent storage"""
         save_receipts_data(self.receipts_processed)
     
+    def _debug_ehdm_response(self, response):
+        """Debug E-HDM API response structure"""
+        print("🔍 DEBUG E-HDM Response:")
+        print(f"Status: {response.status_code}")
+        print(f"Headers: {dict(response.headers)}")
+        try:
+            data = response.json()
+            print("Response JSON structure:")
+            print(json.dumps(data, indent=2)[:500] + "...")  # First 500 chars
+        except:
+            print(f"Response text: {response.text[:200]}...")
+    
     def login(self):
         """Get JWT token from E-HDM API"""
         try:
@@ -162,6 +174,12 @@ class EHDMService:
                 cash_amount = 0.0
                 card_amount = round(float(total_amount), 2)
             
+            # Generate unique code for EHDM receipt (max 30 chars)
+            order_id = shopify_order['id']
+            random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            unique_code = f"SHOP{order_id}_{random_chars}"[:30]
+            print(f"🔑 Generated unique code: {unique_code}")
+            
             receipt_data = {
                 "products": products,
                 "additionalDiscount": 0,
@@ -170,7 +188,9 @@ class EHDMService:
                 "cardAmount": card_amount,
                 "partialAmount": 0,
                 "prePaymentAmount": 0,
-                "partnerTin": "0"  # Use "0" when no TIN available
+                "partnerTin": "0",  # Use "0" when no TIN available
+                "uniqueCode": unique_code,
+                "eMarks": []  # REQUIRED FIELD - empty array
             }
             
             print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
@@ -199,17 +219,6 @@ class EHDMService:
         
         return None
 
-    def _generate_unique_code(self, shopify_order):
-        """
-        Generate unique code for EHDM receipt (max 30 chars)
-        Format: SHOP{order_id}_{random_chars}
-        """
-        order_id = str(shopify_order['id'])
-        random_chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        unique_code = f"SHOP{order_id}_{random_chars}"[:30]
-        print(f"🔑 Generated unique code: {unique_code}")
-        return unique_code
-
     def generate_fiscal_receipt(self, shopify_order):
         """
         Generate fiscal receipt using EHDM API immediately after order confirmation
@@ -234,9 +243,6 @@ class EHDMService:
             if not receipt_data:
                 return False, None, "Failed to prepare receipt data"
             
-            # Generate unique code (non-repeating, max 30 chars)
-            unique_code = self._generate_unique_code(shopify_order)
-            
             # Prepare the complete payload
             payload = {
                 "products": receipt_data['products'],
@@ -247,7 +253,8 @@ class EHDMService:
                 "partialAmount": 0,  # No partial payments for new orders
                 "prePaymentAmount": 0,  # No prepayments
                 "partnerTin": "0",  # Use "0" when no TIN is available
-                "uniqueCode": unique_code
+                "uniqueCode": receipt_data['uniqueCode'],
+                "eMarks": []  # REQUIRED FIELD
             }
             
             # Make API call to generate receipt
@@ -262,33 +269,43 @@ class EHDMService:
                                    json=payload, 
                                    headers=headers)
             
+            # Debug the response
+            self._debug_ehdm_response(response)
+            
             if response.status_code == 200:
                 result = response.json()
                 print("✅ Fiscal receipt generated successfully!")
                 
-                # Extract receipt URL and ID from response
+                # CORRECTED: Extract receipt ID from nested structure
+                receipt_id = result.get('receiptId')  # Top level
+                if not receipt_id:
+                    # Try nested structure
+                    receipt_id = result.get('res', {}).get('receiptId')
+                
+                # CORRECTED: Extract history ID from response (if available)
+                history_id = None
+                if 'res' in result and 'printResponseInfo' in result['res']:
+                    history_id = result['res'].get('printResponseInfo', {}).get('id')
+                
                 receipt_url = result.get('link')
-                receipt_id = result.get('receiptId')
-                history_id = result.get('historyId')  # CRITICAL: Store historyId for refunds
                 
                 if not receipt_url:
                     print("⚠️ No receipt URL found in API response")
-                    if receipt_id:
-                        receipt_url = f"https://store.payx.am/Receipt/2025/{EHDM_USERNAME}/productSale/10/13/{EHDM_USERNAME}_{receipt_id}_2009582.pdf"
-                        print(f"🔄 Constructed receipt URL: {receipt_url}")
                 
                 # Store receipt data for future reference (INCLUDING historyId)
                 receipt_info = {
                     'receipt_id': receipt_id,
                     'history_id': history_id,  # STORE THIS FOR REFUNDS
-                    'unique_code': unique_code,
+                    'unique_code': receipt_data['uniqueCode'],
                     'link': receipt_url,
-                    'response_data': result
+                    'response_data': result  # STORE FULL RESPONSE for debugging
                 }
                 
                 # Cache the receipt and save to persistent storage
                 self.receipts_processed[str(order_id)] = receipt_info
                 self._save_receipts()
+                
+                print(f"✅ Fiscal receipt generated! Receipt ID: {receipt_id}, URL: {receipt_url}")
                 
                 return True, receipt_info, "Receipt generated successfully"
                 
@@ -334,7 +351,8 @@ class EHDMService:
                 "products": self._prepare_refund_products(shopify_order),
                 "cashAmount": 0.0,  # Adjust based on original payment method
                 "cardAmount": float(shopify_order.get('total_price', 0)),
-                "prePaymentAmount": 0.0
+                "prePaymentAmount": 0.0,
+                "eMarks": []  # REQUIRED FIELD
             }
             
             print(f"🔄 Processing refund for order {order_id}, historyId: {history_id}")
@@ -741,7 +759,11 @@ class CourierAutomation:
 
     def is_order_already_processed(self, order_id):
         """Check if order was already processed by our system"""
-        if order_id in processed_orders:
+        # Ensure processed_orders is never None
+        if processed_orders is None:
+            processed_orders = {}
+        
+        if str(order_id) in processed_orders:
             print(f"📋 Order {order_id} found in processed orders cache")
             return True
         
@@ -756,13 +778,13 @@ class CourierAutomation:
                 order_notes = shopify_order.get('note', '')
                 if 'SHIPPING INFORMATION (AUTO-GENERATED)' in order_notes:
                     print(f"✅ Order {order_id} already processed by our system (found in notes)")
-                    processed_orders[order_id] = True
+                    processed_orders[str(order_id)] = True
                     return True
                 
                 tags = [tag.strip().lower() for tag in shopify_order.get('tags', '').split(',')]
                 if 'processed' in tags or 'ready-to-ship' in tags:
                     print(f"✅ Order {order_id} marked as processed in tags")
-                    processed_orders[order_id] = True
+                    processed_orders[str(order_id)] = True
                     return True
                     
         except Exception as e:
@@ -772,7 +794,7 @@ class CourierAutomation:
 
     def mark_order_as_processed(self, order_id):
         """Mark order as processed in our system"""
-        processed_orders[order_id] = True
+        processed_orders[str(order_id)] = True
         print(f"📝 Marked order {order_id} as processed in local cache")
 
     def process_order_immediately(self, order_id):
