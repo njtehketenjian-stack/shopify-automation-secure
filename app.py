@@ -76,6 +76,39 @@ class EHDMService:
             print(json.dumps(data, indent=2)[:500] + "...")  # First 500 chars
         except:
             print(f"Response text: {response.text[:200]}...")
+
+    def _get_history_id_by_receipt(self, receipt_id):
+        """Get historyId from receiptId using History API - REQUIRED FOR REFUNDS"""
+        try:
+            if not self.token:
+                print("❌ No token available for history lookup")
+                return None
+                
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Accept': 'application/json'
+            }
+            
+            history_url = f"{self.base_url}/api/History/GetHistoryByReceiptId?receiptId={receipt_id}"
+            print(f"📋 Looking up historyId for receipt {receipt_id}...")
+            response = requests.get(history_url, headers=headers)
+            
+            if response.status_code == 200:
+                history_data = response.json()
+                history_id = history_data.get('id')  # This is the historyId we need!
+                if history_id:
+                    print(f"✅ Retrieved historyId {history_id} for receipt {receipt_id}")
+                    return history_id
+                else:
+                    print(f"⚠️ No historyId found in response for receipt {receipt_id}")
+                    return None
+            else:
+                print(f"❌ Failed to get historyId for receipt {receipt_id}: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error getting historyId: {str(e)}")
+            return None
     
     def login(self):
         """Get JWT token from E-HDM API"""
@@ -219,105 +252,105 @@ class EHDMService:
         
         return None
 
-    def generate_fiscal_receipt(self, shopify_order):
-        """
-        Generate fiscal receipt using EHDM API immediately after order confirmation
-        Returns: (success, receipt_data, error_message)
-        """
-        print("🧾 Generating fiscal receipt for EHDM...")
+def generate_fiscal_receipt(self, shopify_order):
+    """
+    Generate fiscal receipt using EHDM API immediately after order confirmation
+    Returns: (success, receipt_data, error_message)
+    """
+    print("🧾 Generating fiscal receipt for EHDM...")
+    
+    try:
+        # Check if receipt was already generated for this order
+        order_id = shopify_order['id']
+        if str(order_id) in self.receipts_processed:
+            print(f"📋 Receipt already generated for order {order_id}, skipping")
+            return True, self.receipts_processed[str(order_id)], "Receipt already exists"
         
-        try:
-            # Check if receipt was already generated for this order
-            order_id = shopify_order['id']
-            if str(order_id) in self.receipts_processed:
-                print(f"📋 Receipt already generated for order {order_id}, skipping")
-                return True, self.receipts_processed[str(order_id)], "Receipt already exists"
+        # Validate we have a valid token
+        if not self.token:
+            print("❌ No valid token for EHDM API")
+            return False, None, "No valid authentication token"
+        
+        # Prepare receipt data
+        receipt_data = self._prepare_receipt_data(shopify_order)
+        if not receipt_data:
+            return False, None, "Failed to prepare receipt data"
+        
+        # Prepare the complete payload
+        payload = {
+            "products": receipt_data['products'],
+            "additionalDiscount": receipt_data.get('additionalDiscount', 0),
+            "additionalDiscountType": receipt_data.get('additionalDiscountType', 0),
+            "cashAmount": receipt_data['cashAmount'],
+            "cardAmount": receipt_data['cardAmount'],
+            "partialAmount": 0,  # No partial payments for new orders
+            "prePaymentAmount": 0,  # No prepayments
+            "partnerTin": "0",  # Use "0" when no TIN is available
+            "uniqueCode": receipt_data['uniqueCode'],
+            "eMarks": []  # REQUIRED FIELD
+        }
+        
+        # Make API call to generate receipt
+        headers = {
+            'Authorization': f'Bearer {self.token}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        print("📤 Sending receipt to EHDM API...")
+        response = requests.post(f"{self.base_url}/api/Hdm/Print", 
+                               json=payload, 
+                               headers=headers)
+        
+        # Debug the response
+        self._debug_ehdm_response(response)
+        
+        if response.status_code == 200:
+            result = response.json()
+            print("✅ Fiscal receipt generated successfully!")
             
-            # Validate we have a valid token
-            if not self.token:
-                print("❌ No valid token for EHDM API")
-                return False, None, "No valid authentication token"
+            # CORRECTED: Extract receipt ID from nested structure
+            receipt_id = result.get('receiptId')  # Top level
+            if not receipt_id:
+                # Try nested structure
+                receipt_id = result.get('res', {}).get('receiptId')
             
-            # Prepare receipt data
-            receipt_data = self._prepare_receipt_data(shopify_order)
-            if not receipt_data:
-                return False, None, "Failed to prepare receipt data"
+            receipt_url = result.get('link')
             
-            # Prepare the complete payload
-            payload = {
-                "products": receipt_data['products'],
-                "additionalDiscount": receipt_data.get('additionalDiscount', 0),
-                "additionalDiscountType": receipt_data.get('additionalDiscountType', 0),
-                "cashAmount": receipt_data['cashAmount'],
-                "cardAmount": receipt_data['cardAmount'],
-                "partialAmount": 0,  # No partial payments for new orders
-                "prePaymentAmount": 0,  # No prepayments
-                "partnerTin": "0",  # Use "0" when no TIN is available
-                "uniqueCode": receipt_data['uniqueCode'],
-                "eMarks": []  # REQUIRED FIELD
-            }
-            
-            # Make API call to generate receipt
-            headers = {
-                'Authorization': f'Bearer {self.token}',
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
-            
-            print("📤 Sending receipt to EHDM API...")
-            response = requests.post(f"{self.base_url}/api/Hdm/Print", 
-                                   json=payload, 
-                                   headers=headers)
-            
-            # Debug the response
-            self._debug_ehdm_response(response)
-            
-            if response.status_code == 200:
-                result = response.json()
-                print("✅ Fiscal receipt generated successfully!")
-                
-                # CORRECTED: Extract receipt ID from nested structure
-                receipt_id = result.get('receiptId')  # Top level
-                if not receipt_id:
-                    # Try nested structure
-                    receipt_id = result.get('res', {}).get('receiptId')
-                
-                # CORRECTED: Extract history ID from response (if available)
-                history_id = None
-                if 'res' in result and 'printResponseInfo' in result['res']:
-                    history_id = result['res'].get('printResponseInfo', {}).get('id')
-                
-                receipt_url = result.get('link')
-                
-                if not receipt_url:
-                    print("⚠️ No receipt URL found in API response")
-                
-                # Store receipt data for future reference (INCLUDING historyId)
-                receipt_info = {
-                    'receipt_id': receipt_id,
-                    'history_id': history_id,  # STORE THIS FOR REFUNDS
-                    'unique_code': receipt_data['uniqueCode'],
-                    'link': receipt_url,
-                    'response_data': result  # STORE FULL RESPONSE for debugging
-                }
-                
-                # Cache the receipt and save to persistent storage
-                self.receipts_processed[str(order_id)] = receipt_info
-                self._save_receipts()
-                
-                print(f"✅ Fiscal receipt generated! Receipt ID: {receipt_id}, URL: {receipt_url}")
-                
-                return True, receipt_info, "Receipt generated successfully"
-                
+            # CRITICAL FIX: Get historyId for refunds using the receiptId we just got
+            history_id = None
+            if receipt_id:
+                # Get historyId using the receiptId we just got
+                history_id = self._get_history_id_by_receipt(receipt_id)
             else:
-                error_msg = f"EHDM API Error: {response.status_code} - {response.text}"
-                print(f"❌ {error_msg}")
-                return False, None, error_msg
-                
-        except Exception as e:
-            error_msg = f"Receipt generation error: {str(e)}"
+                print("⚠️ Cannot get historyId: No receiptId available")
+            
+            # Store receipt data for future reference (INCLUDING historyId)
+            receipt_info = {
+                'receipt_id': receipt_id,
+                'history_id': history_id,  # STORE THIS FOR REFUNDS
+                'unique_code': receipt_data['uniqueCode'],
+                'link': receipt_url,
+                'response_data': result  # STORE FULL RESPONSE for debugging
+            }
+            
+            # Cache the receipt and save to persistent storage
+            self.receipts_processed[str(order_id)] = receipt_info
+            self._save_receipts()
+            
+            print(f"✅ Fiscal receipt generated! Receipt ID: {receipt_id}, URL: {receipt_url}")
+            
+            return True, receipt_info, "Receipt generated successfully"
+            
+        else:
+            error_msg = f"EHDM API Error: {response.status_code} - {response.text}"
             print(f"❌ {error_msg}")
             return False, None, error_msg
+            
+    except Exception as e:
+        error_msg = f"Receipt generation error: {str(e)}"
+        print(f"❌ {error_msg}")
+        return False, None, error_msg
 
     def process_order_refund(self, shopify_order, refund_amount=None):
         """
