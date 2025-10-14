@@ -323,7 +323,205 @@ class EHDMService:
             print(f"⚠️ Error preparing receipt email: {str(e)}")
             return False
 
-    # ... keep all the other existing methods (extract_customer_data, create_courier_order, etc.)
+    def process_order_refund(self, shopify_order, refund_amount=None):
+        """
+        Process refund/return for an order using EHDM Reverse API
+        """
+        try:
+            order_id = shopify_order['id']
+            
+            # Check if we have receipt data for this order
+            if str(order_id) not in self.receipts_processed:
+                print(f"❌ No receipt found for order {order_id}, cannot process refund")
+                return False, "No receipt found for this order"
+            
+            receipt_data = self.receipts_processed[str(order_id)]
+            receipt_id = receipt_data.get('receipt_id')
+            
+            if not receipt_id:
+                print(f"❌ No receipt ID found for order {order_id}")
+                return False, "No receipt ID available"
+            
+            # Use provided refund amount or full order amount
+            if refund_amount is None:
+                refund_amount = float(shopify_order.get('total_price', 0))
+            
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            # For full refund, we use ReverseByReceiptId
+            refund_data = {
+                "receiptId": receipt_id
+            }
+            
+            print(f"🔄 Processing refund for order {order_id}, amount: {refund_amount}")
+            response = requests.post(f"{self.base_url}/api/Hdm/ReverseByReceiptId", 
+                                   json=refund_data, 
+                                   headers=headers)
+            
+            if response.status_code == 200:
+                result = response.json()
+                print("✅ Refund processed successfully in EHDM system!")
+                
+                # Extract refund receipt URL
+                refund_receipt_url = result.get('revercelink') or result.get('link')
+                if refund_receipt_url:
+                    print(f"📄 Refund receipt URL: {refund_receipt_url}")
+                
+                return True, "Refund processed successfully"
+            else:
+                error_msg = f"Refund API Error: {response.status_code} - {response.text}"
+                print(f"❌ {error_msg}")
+                return False, error_msg
+                
+        except Exception as e:
+            error_msg = f"Refund processing error: {str(e)}"
+            print(f"❌ {error_msg}")
+            return False, error_msg
+
+    def _create_fulfillment_simple(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """
+        Simple fulfillment approach that should work with your API permissions
+        """
+        try:
+            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
+            
+            fulfillment_data = {
+                "fulfillment": {
+                    "location_id": self._get_primary_location_id(shopify_headers),
+                    "tracking_number": str(tracking_number),
+                    "tracking_company": "TransImpex Express",
+                    "tracking_urls": [tracking_url],
+                    "notify_customer": True
+                }
+            }
+
+            fulfill_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}/fulfillments.json"
+            response = requests.post(fulfill_url, json=fulfillment_data, headers=shopify_headers)
+
+            if response.status_code in [201, 200]:
+                print("✅ Simple fulfillment created successfully!")
+                
+                # Add receipt URL to order notes if available
+                if receipt_url:
+                    self._update_order_with_receipt_url(order_id, receipt_url, shopify_headers)
+                
+                return True
+            else:
+                print(f"❌ Simple fulfillment failed: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Simple fulfillment error: {str(e)}")
+            return False
+
+    def _get_primary_location_id(self, shopify_headers):
+        """
+        Get primary location ID for fulfillment
+        """
+        try:
+            locations_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/locations.json"
+            response = requests.get(locations_url, headers=shopify_headers)
+            
+            if response.status_code == 200:
+                locations = response.json().get('locations', [])
+                if locations:
+                    return locations[0]['id']
+        except Exception as e:
+            print(f"⚠️ Could not get location ID: {str(e)}")
+        
+        return None
+
+    def update_shopify_tracking_with_shipping_links(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """Enhanced: Update Shopify with proper shipping links AND receipt URL"""
+        print(f"📦 Updating Shopify order {order_id} with tracking {tracking_number}")
+        
+        # Try simple fulfillment first (most reliable)
+        if self._create_fulfillment_simple(order_id, tracking_number, shopify_headers, receipt_url):
+            self._mark_order_processed(order_id, shopify_headers)
+            return True
+        
+        # Fallback: Manual order update
+        print("🔄 Trying manual order update with tracking URL and receipt URL...")
+        return self._update_order_manually(order_id, tracking_number, shopify_headers, receipt_url)
+
+    def _update_order_manually(self, order_id, tracking_number, shopify_headers, receipt_url=None):
+        """
+        Manual order update as fallback
+        """
+        try:
+            tracking_url = f"https://transimpexexpress.am/track?key={tracking_number}"
+            
+            note_attributes = [
+                {
+                    "name": "tracking_number",
+                    "value": str(tracking_number)
+                },
+                {
+                    "name": "tracking_url", 
+                    "value": tracking_url
+                },
+                {
+                    "name": "courier",
+                    "value": "TransImpex Express"
+                }
+            ]
+            
+            # Add receipt URL if provided
+            if receipt_url:
+                note_attributes.append({
+                    "name": "fiscal_receipt_url",
+                    "value": receipt_url
+                })
+                print(f"📄 Adding fiscal receipt URL to order: {receipt_url}")
+            
+            order_update_data = {
+                "order": {
+                    "id": order_id,
+                    "fulfillment_status": "fulfilled",
+                    "tags": "processed,fulfilled",
+                    "note_attributes": note_attributes
+                }
+            }
+            
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            response = requests.put(order_url, json=order_update_data, headers=shopify_headers)
+            
+            if response.status_code == 200:
+                print("✅ Order manually updated with tracking URL and receipt URL!")
+                return True
+            else:
+                print(f"❌ Manual update failed: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            print(f"❌ Manual update error: {str(e)}")
+            return False
+
+    def _update_order_with_receipt_url(self, order_id, receipt_url, shopify_headers):
+        """Helper method to update order with receipt URL"""
+        try:
+            update_data = {
+                "order": {
+                    "id": order_id,
+                    "note_attributes": [
+                        {
+                            "name": "fiscal_receipt_url",
+                            "value": receipt_url
+                        }
+                    ]
+                }
+            }
+            order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+            response = requests.put(order_url, json=update_data, headers=shopify_headers)
+            if response.status_code == 200:
+                print("✅ Receipt URL added to order notes!")
+            else:
+                print(f"⚠️ Could not add receipt URL to order: {response.status_code}")
+        except Exception as e:
+            print(f"⚠️ Error adding receipt URL: {str(e)}")
 
     def extract_customer_data(self, shopify_order):
         """
@@ -914,6 +1112,56 @@ def handle_order_updated():
         print(f"❌ Error processing order updated webhook: {str(e)}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+@app.route('/webhook/order-cancelled', methods=['POST'])
+def handle_order_cancelled():
+    """Webhook for order cancellations to process EHDM refunds"""
+    print("🔄 Received order cancelled webhook")
+    
+    try:
+        shopify_order = request.json
+        order_id = shopify_order['id']
+        order_number = shopify_order.get('order_number', 'Unknown')
+
+        # Webhook idempotency
+        webhook_id = generate_webhook_id(shopify_order)
+        if webhook_id in processed_webhooks:
+            print(f"🔄 Duplicate cancellation webhook detected for order {order_number}, skipping")
+            return jsonify({"success": True, "message": "Webhook already processed"}), 200
+        
+        processed_webhooks[webhook_id] = True
+
+        print(f"🔄 Processing refund for cancelled order #{order_number} (ID: {order_id})")
+
+        # Process refund with EHDM
+        ehdm_service = EHDMService()
+        if ehdm_service.login():
+            success, message = ehdm_service.process_order_refund(shopify_order)
+            if success:
+                print(f"✅ Refund receipt generated for order {order_number}")
+                
+                # Update Shopify order with refund status
+                automation = CourierAutomation()
+                update_data = {
+                    "order": {
+                        "id": order_id,
+                        "tags": "refunded,cancelled"
+                    }
+                }
+                update_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+                requests.put(update_url, json=update_data, headers=automation.shopify_headers)
+                
+                return jsonify({"success": True, "message": message}), 200
+            else:
+                print(f"❌ Refund failed for order {order_number}: {message}")
+                return jsonify({"success": False, "message": message}), 500
+        else:
+            print(f"❌ PayX login failed for refund processing")
+            return jsonify({"success": False, "message": "PayX login failed"}), 500
+            
+    except Exception as e:
+        print(f"❌ Error processing refund: {str(e)}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 @app.route('/process-order/<order_id>', methods=['POST'])
 def process_order_manual(order_id):
     """Manual endpoint to process an order immediately"""
@@ -932,6 +1180,41 @@ def process_order_manual(order_id):
         print(f"❌ Error in manual order processing: {str(e)}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+@app.route('/refund-order/<order_id>', methods=['POST'])
+def refund_order_manual(order_id):
+    """Manual endpoint to refund an order"""
+    print(f"🔄 Manual refund requested for order {order_id}")
+    
+    try:
+        # Get order details from Shopify
+        shopify_headers = {
+            'Content-Type': 'application/json',
+            'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN
+        }
+        order_url = f"https://{SHOPIFY_STORE_URL}/admin/api/2023-10/orders/{order_id}.json"
+        response = requests.get(order_url, headers=shopify_headers)
+
+        if response.status_code != 200:
+            return jsonify({"success": False, "message": f"Failed to fetch order {order_id}"}), 500
+
+        shopify_order = response.json().get('order', {})
+        
+        # Process refund with EHDM
+        ehdm_service = EHDMService()
+        if ehdm_service.login():
+            success, message = ehdm_service.process_order_refund(shopify_order)
+            if success:
+                print(f"✅ Manual refund processed for order {order_id}")
+                return jsonify({"success": True, "message": message}), 200
+            else:
+                return jsonify({"success": False, "message": message}), 500
+        else:
+            return jsonify({"success": False, "message": "PayX login failed"}), 500
+            
+    except Exception as e:
+        print(f"❌ Error in manual refund: {str(e)}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "Shipping automation server is running"}), 200
@@ -947,16 +1230,20 @@ def home():
     - ✅ DUPLICATE DETECTION: Prevents re-processing same orders<br>
     - ✅ BARCODE RETRY: Auto-retry with new IDs on conflicts<br>
     - ✅ COMPLETE ORDER DATA: Fetches full customer details from API<br>
-    - ✅ MODERN FULFILLMENT: Uses FulfillmentOrder API<br><br>
+    - ✅ MODERN FULFILLMENT: Uses FulfillmentOrder API<br>
+    - ✅ AUTOMATIC REFUNDS: EHDM refund receipts for cancelled orders<br><br>
     
     <strong>Setup Required:</strong><br>
     1. Add Shopify webhook: orders/updated → /webhook/order-updated<br>
-    2. Add 'confirmed' tag in Shopify to auto-process orders<br><br>
+    2. Add Shopify webhook: orders/cancelled → /webhook/order-cancelled<br>
+    3. Add 'confirmed' tag in Shopify to auto-process orders<br><br>
     
     <strong>Endpoints:</strong><br>
     - POST /webhook/order-paid (Shopify webhook)<br>
     - POST /webhook/order-updated (Shopify webhook)<br>
+    - POST /webhook/order-cancelled (Shopify webhook)<br>
     - POST /process-order/&lt;order_id&gt; (manual trigger)<br>
+    - POST /refund-order/&lt;order_id&gt; (manual refund)<br>
     - GET /health (health check)<br>
     """
 
