@@ -76,36 +76,38 @@ def _prepare_receipt_data(self, shopify_order):
         products = []
         total_amount = 0
         
-        for item in line_items:
+        for index, item in enumerate(line_items):
             quantity = int(item.get('quantity', 1))
             price = float(item.get('price', 0))
             total_price = price * quantity
             total_amount += total_price
             
-            # Extract product SKU or use default codes
+            # Extract product data
             sku = item.get('sku', '')
-            product_name = item.get('name', 'Product')[:100]
+            product_name = item.get('name', 'Product')[:50]  # Max 50 chars for EHDM
             
-            # Generate product codes based on SKU or use defaults
+            # Generate product codes based on available data
             if sku:
                 good_code = sku[:20]  # Use SKU as goodCode if available
-                adg_code = "GEN"  # General category code
+                # Try to extract HS code from SKU or use default
+                adg_code = self._extract_hs_code(sku) or "8471"  # Default: Automatic data processing machines
             else:
                 # Default codes for products without SKU
-                good_code = "DEF001"
-                adg_code = "GEN"
+                good_code = f"SHOP{index+1:03d}"
+                adg_code = "8471"  # Default HS code for general goods
             
             product_data = {
-                "name": product_name,
-                "price": int(total_price * 100),  # Convert to cents
-                "quantity": quantity,
-                "measure": "piece",
-                "line": len(products) + 1,
                 # REQUIRED FIELDS FOR EHDM API:
-                "unit": "piece",
-                "adgCode": adg_code,
-                "goodCode": good_code,
-                "goodName": product_name
+                "adgCode": adg_code,  # HS Code (Harmonized System)
+                "goodCode": good_code,  # Internal code / Barcode
+                "goodName": product_name,  # Product name (max 50 chars)
+                "quantity": float(quantity),  # Must be double type
+                "unit": "piece",  # Unit of measurement
+                "price": round(float(total_price), 2),  # Price with max 2 decimal places
+                "discount": 0,  # Product discount amount
+                "discountType": 0,  # 0 = no discount, 1 = percentage, 2 = fixed amount
+                "receiptProductId": index,  # Product index (starts from 0)
+                "dep": 1  # Taxation department: 1 = VAT taxable
             }
             products.append(product_data)
         
@@ -113,25 +115,26 @@ def _prepare_receipt_data(self, shopify_order):
         if not products:
             total_amount = float(shopify_order.get('total_price', 0))
             products = [{
-                "name": "Online Order Items",
-                "price": int(total_amount * 100),
-                "quantity": 1,
-                "measure": "piece",
-                "line": 1,
-                "unit": "piece",
-                "adgCode": "GEN",
+                "adgCode": "8471",  # Default HS code
                 "goodCode": "ONLINE001",
-                "goodName": "Online Order Items"
+                "goodName": "Online Order Items",
+                "quantity": 1.0,
+                "unit": "piece", 
+                "price": round(float(total_amount), 2),
+                "discount": 0,
+                "discountType": 0,
+                "receiptProductId": 0,
+                "dep": 1  # VAT taxable
             }]
         
         # Determine payment method (cash vs card)
         payment_gateway = shopify_order.get('gateway', '').lower()
         if 'cash' in payment_gateway:
-            cash_amount = int(total_amount * 100)
-            card_amount = 0
+            cash_amount = round(float(total_amount), 2)
+            card_amount = 0.0
         else:
-            cash_amount = 0
-            card_amount = int(total_amount * 100)
+            cash_amount = 0.0
+            card_amount = round(float(total_amount), 2)
         
         receipt_data = {
             "products": products,
@@ -141,7 +144,7 @@ def _prepare_receipt_data(self, shopify_order):
             "cardAmount": card_amount,
             "partialAmount": 0,
             "prePaymentAmount": 0,
-            "partnerTin": "0"
+            "partnerTin": "0"  # Use "0" when no TIN available
         }
         
         print(f"✅ Prepared receipt data for {len(products)} products, total: {total_amount}")
@@ -157,6 +160,27 @@ def _prepare_receipt_data(self, shopify_order):
     except Exception as e:
         print(f"❌ Error preparing receipt data: {str(e)}")
         return None
+
+def _extract_hs_code(self, sku):
+    """
+    Extract HS code from SKU if possible, or use category mapping
+    You can customize this based on your product categories
+    """
+    # Example mapping - customize based on your products
+    category_mapping = {
+        'CLOTH': '6109',  # T-shirts
+        'ELEC': '8517',   # Telephones
+        'FOOD': '1905',   # Bread, pastry
+        'BOOK': '4901',   # Books
+        'BEAUTY': '3304', # Beauty products
+    }
+    
+    # Check if SKU contains category codes
+    for category, hs_code in category_mapping.items():
+        if category in sku.upper():
+            return hs_code
+    
+    return None  # Will use default
 
     def _generate_unique_code(self, shopify_order):
         """
