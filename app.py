@@ -1175,6 +1175,23 @@ def home():
     - GET /health (health check)<br>
     """
 
+# Simple keep-alive to prevent Render sleep
+def start_keep_alive():
+    def ping():
+        while True:
+            try:
+                requests.get("https://shopify-automation-secure.onrender.com/health", timeout=10)
+                print("🔄 Keep-alive ping")
+            except Exception as e:
+                print(f"⚠️ Keep-alive failed: {e}")
+            time.sleep(300)  # Ping every 5 minutes
+    
+    thread = threading.Thread(target=ping, daemon=True)
+    thread.start()
+
+# Start keep-alive when app starts
+start_keep_alive()
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     print(f"🌐 Server starting on port {port}...")
