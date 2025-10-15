@@ -3,6 +3,7 @@ import requests
 import json
 import os
 import time
+import threading
 import hashlib
 import random
 import string
@@ -1137,7 +1138,11 @@ def refund_order_manual(order_id):
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "message": "Shipping automation server is running"}), 200
+    return jsonify({
+        "status": "healthy", 
+        "message": "Shipping automation server is running",
+        "timestamp": time.time()
+    }), 200
 
 @app.route('/')
 def home():
