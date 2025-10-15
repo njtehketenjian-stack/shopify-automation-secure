@@ -365,6 +365,71 @@ class EHDMService:
             print(f"❌ {error_msg}")
             return False, None, error_msg
 
+    def process_order_refund(self, shopify_order, refund_amount=None):
+        """
+        FIXED: Process refund using correct EHDM Reverse API with historyId
+        """
+        try:
+            order_id = shopify_order['id']
+            
+            # Check if we have receipt data for this order (from persistent storage)
+            if str(order_id) not in self.receipts_processed:
+                print(f"❌ No receipt found for order {order_id}, cannot process refund")
+                return False, "No receipt found for this order"
+            
+            receipt_data = self.receipts_processed[str(order_id)]
+            
+            # We need historyId for the Reverse API (NOT receiptId)
+            history_id = receipt_data.get('history_id')
+            if not history_id:
+                print(f"❌ No historyId found for order {order_id}")
+                return False, "No historyId available for refund"
+            
+            headers = {
+                'Authorization': f'Bearer {self.token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            
+            # Use Reverse API with historyId for product returns
+            refund_data = {
+                "historyId": history_id,
+                "products": self._prepare_refund_products(shopify_order),
+                "cashAmount": 0.0,  # Adjust based on original payment method
+                "cardAmount": float(shopify_order.get('total_price', 0)),
+                "prePaymentAmount": 0.0,
+                "eMarks": []  # REQUIRED FIELD
+            }
+            
+            print(f"🔄 Processing refund for order {order_id}, historyId: {history_id}")
+            print(f"📤 Sending refund data to EHDM Reverse API...")
+            
+            response = requests.post(f"{self.base_url}/api/Hdm/Reverse", 
+                                   json=refund_data, 
+                                   headers=headers)
+            
+            if response.status_code == 200:
+                result = response.json()
+                print("✅ Return receipt generated successfully in EHDM system!")
+                
+                # Extract return receipt URL
+                return_receipt_url = result.get('link')
+                if return_receipt_url:
+                    print(f"📄 Return receipt URL: {return_receipt_url}")
+                else:
+                    print("⚠️ No return receipt URL in response")
+                
+                return True, "Return receipt generated successfully"
+            else:
+                error_msg = f"Refund API Error: {response.status_code} - {response.text}"
+                print(f"❌ {error_msg}")
+                return False, error_msg
+                
+        except Exception as e:
+            error_msg = f"Refund processing error: {str(e)}"
+            print(f"❌ {error_msg}")
+            return False, error_msg
+
     def _prepare_refund_products(self, shopify_order):
         """Prepare products array for refund (return all items)"""
         products = []
